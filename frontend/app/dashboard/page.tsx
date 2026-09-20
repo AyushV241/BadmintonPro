@@ -1,0 +1,72 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { logout, me, tokenStore, type User } from "@/lib/api";
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const token = tokenStore.get();
+    if (!token) {
+      router.replace("/login");
+      return;
+    }
+
+    // Verify the stored token is still valid server-side; it may have expired
+    // or been revoked since it was saved.
+    me(token)
+      .then(setUser)
+      .catch(() => {
+        tokenStore.clear();
+        router.replace("/login");
+      });
+  }, [router]);
+
+  async function handleSignOut() {
+    const token = tokenStore.get();
+    if (token) {
+      await logout(token).catch(() => {
+        /* the local session is cleared regardless */
+      });
+    }
+    tokenStore.clear();
+    router.replace("/login");
+  }
+
+  if (!user) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <p className="text-sm text-slate-500 dark:text-slate-400">Loading…</p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-50 px-4 py-12 dark:bg-slate-950">
+      <div className="mx-auto max-w-lg">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">
+            Welcome, {user.name}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+            {user.email}
+          </p>
+
+          <p className="mt-6 text-sm text-slate-600 dark:text-slate-300">
+            You are signed in. Players, matches and rankings will live here.
+          </p>
+
+          <button
+            onClick={handleSignOut}
+            className="mt-6 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
