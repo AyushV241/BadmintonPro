@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: badmintonpro-db
+    environment:
+      # Local development credentials. These are NOT secrets: they are the same
+      # on every developer's machine, which is why they are committed. Real
+      # environments get their credentials from DATABASE_URL instead.
+      POSTGRES_USER: ${POSTGRES_USER:-badminton}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-badminton}
+      POSTGRES_DB: ${POSTGRES_DB:-badmintonpro}
+    ports:
+      # Bound to 127.0.0.1 so the database is not reachable from the network.
+      # Without the host prefix Docker publishes on 0.0.0.0 and anyone on the
+      # same wifi can connect.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The server briefly accepts connections during init before it is really
+      # ready, so depend on this rather than on the container starting.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-badminton} -d ${POSTGRES_DB:-badmintonpro}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

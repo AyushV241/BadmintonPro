@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,8 @@ import (
 
 func newTestAPI(t *testing.T) http.Handler {
 	t.Helper()
-	store := NewStore()
-	if err := store.CreateUser("usr_1", "Demo Player", "player@badmintonpro.local", "smash123"); err != nil {
+	store := NewMemoryStore()
+	if err := store.CreateUser(context.Background(), "usr_1", "Demo Player", "player@badmintonpro.local", "smash123"); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	return NewAPI(store).Routes()

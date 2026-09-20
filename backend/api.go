@@ -9,10 +9,10 @@ import (
 )
 
 type API struct {
-	store *Store
+	store Store
 }
 
-func NewAPI(store *Store) *API {
+func NewAPI(store Store) *API {
 	return &API{store: store}
 }
 
@@ -57,7 +57,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, token, err := a.store.Authenticate(req.Email, req.Password)
+	user, token, err := a.store.Authenticate(r.Context(), req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
 			writeError(w, http.StatusUnauthorized, "incorrect email or password")
@@ -73,7 +73,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if token := bearerToken(r); token != "" {
-		a.store.Revoke(token)
+		a.store.Revoke(r.Context(), token)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -85,7 +85,7 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.store.UserForToken(token)
+	user, err := a.store.UserForToken(r.Context(), token)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid or expired session")
 		return

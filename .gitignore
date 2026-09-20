@@ -13,3 +13,6 @@ backend/*.test
 
 # boilerplate from create-next-app, superseded by the root README
 frontend/README.md
+
+# local docker-compose overrides
+.env
