@@ -60,6 +60,19 @@ export async function login(email: string, password: string): Promise<User> {
   return user;
 }
 
+/** Creates a password account and signs it in. 409 means the email is taken. */
+export async function signup(
+  name: string,
+  email: string,
+  password: string,
+): Promise<User> {
+  const { user } = await request<{ user: User }>("/api/signup", {
+    method: "POST",
+    body: JSON.stringify({ name, email, password }),
+  });
+  return user;
+}
+
 export async function me(): Promise<User> {
   const { user } = await request<{ user: User }>("/api/me");
   return user;

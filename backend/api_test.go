@@ -179,3 +179,90 @@ func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Errorf("after logout /api/me = %d, want 401", rec.Code)
 	}
 }
+
+func postSignup(h http.Handler, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/signup", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return serve(h, req)
+}
+
+func TestSignupCreatesUnverifiedAccountAndSignsIn(t *testing.T) {
+	h, _ := newTestAPI(t)
+	rec := postSignup(h, `{"name":"  New Player ","email":" New@Example.com ","password":"longenough"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", rec.Code, rec.Body)
+	}
+
+	c := findCookie(rec, sessionCookieName)
+	if c == nil || c.Value == "" || !c.HttpOnly {
+		t.Fatalf("expected an httpOnly session cookie, got %+v", c)
+	}
+	if strings.Contains(rec.Body.String(), c.Value) {
+		t.Error("response body leaks the session token")
+	}
+
+	var resp userResponse
+	json.Unmarshal(getMe(h, c).Body.Bytes(), &resp)
+	if resp.User.Name != "New Player" || resp.User.Email != "new@example.com" {
+		t.Errorf("user = %+v, want trimmed name and normalised email", resp.User)
+	}
+	// Nothing has proved the email yet. Marking it verified would let a
+	// squatter keep the account after the real owner signs in with Google.
+	if resp.User.EmailVerified {
+		t.Error("a signed-up account must start with emailVerified false")
+	}
+
+	if rec := postLogin(h, `{"email":"new@example.com","password":"longenough"}`); rec.Code != http.StatusOK {
+		t.Errorf("login with the new password = %d, want 200", rec.Code)
+	}
+}
+
+func TestSignupRefusesTakenEmail(t *testing.T) {
+	h, store := newTestAPI(t)
+	store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: "google", Subject: "g", Email: "googleonly@gmail.com", EmailVerified: true})
+
+	for name, email := range map[string]string{
+		"password account":         "player@badmintonpro.local",
+		"different case":           "PLAYER@badmintonpro.local",
+		"account with no password": "googleonly@gmail.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := postSignup(h, `{"name":"Someone","email":"`+email+`","password":"longenough"}`)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", rec.Code)
+			}
+			if findCookie(rec, sessionCookieName) != nil {
+				t.Error("refused signup must not set a session cookie")
+			}
+		})
+	}
+
+	// The existing account is untouched.
+	if rec := postLogin(h, `{"email":"player@badmintonpro.local","password":"smash123"}`); rec.Code != http.StatusOK {
+		t.Errorf("original login = %d, want 200", rec.Code)
+	}
+}
+
+func TestSignupRejectsInvalidInput(t *testing.T) {
+	h, _ := newTestAPI(t)
+	for name, body := range map[string]string{
+		"not json":             `{`,
+		"unknown field":        `{"name":"A","email":"a@b.co","password":"longenough","emailVerified":true}`,
+		"missing name":         `{"name":"  ","email":"a@b.co","password":"longenough"}`,
+		"name too long":        `{"name":"` + strings.Repeat("n", 101) + `","email":"a@b.co","password":"longenough"}`,
+		"invalid email":        `{"name":"A","email":"not-an-email","password":"longenough"}`,
+		"email with name":      `{"name":"A","email":"A <a@b.co>","password":"longenough"}`,
+		"short password":       `{"name":"A","email":"a@b.co","password":"short"}`,
+		"password over bcrypt": `{"name":"A","email":"a@b.co","password":"` + strings.Repeat("p", 73) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := postSignup(h, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body: %s)", rec.Code, rec.Body)
+			}
+			if findCookie(rec, sessionCookieName) != nil {
+				t.Error("rejected signup must not set a session cookie")
+			}
+		})
+	}
+}

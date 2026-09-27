@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/mail"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 )
@@ -26,6 +28,7 @@ func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", a.handleHealth)
 
+	mux.HandleFunc("POST /api/signup", a.handleSignup)
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/me", a.handleMe)
@@ -45,6 +48,21 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type signupRequest struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+const (
+	maxNameLength     = 100
+	maxEmailLength    = 254 // RFC 5321 limit on a forward path
+	minPasswordLength = 8
+	// bcrypt ignores everything past 72 bytes, so a longer password would
+	// silently be only partly checked. Reject it instead.
+	maxPasswordBytes = 72
+)
+
 type userResponse struct {
 	User User `json:"user"`
 }
@@ -55,6 +73,77 @@ type errorResponse struct {
 
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSignup creates a password account and signs it in. The email is
+// stored unverified: nothing has proved the person owns it yet, which is what
+// lets a provider that does vouch for it take the account over (see
+// decideLink).
+//
+// Unlike login, signup reveals whether an email is registered: the 409 below
+// answers that question for anyone who asks. Hiding it needs email
+// verification (always reply "check your inbox", and tell an existing owner
+// by email instead), which is not built yet. Until then this is a known
+// tradeoff, and rate limiting is the mitigation to add first.
+func (a *API) handleSignup(w http.ResponseWriter, r *http.Request) {
+	var req signupRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "request body must be valid JSON with name, email and password")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	email := strings.TrimSpace(req.Email)
+	if msg := validateSignup(name, email, req.Password); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	user, err := a.store.CreateUser(r.Context(), NewUser{Name: name, Email: email, Password: req.Password})
+	if errors.Is(err, ErrEmailTaken) {
+		writeError(w, http.StatusConflict, "an account with this email already exists")
+		return
+	}
+	if err != nil {
+		log.Printf("signup: %v", err)
+		writeError(w, http.StatusInternalServerError, "something went wrong")
+		return
+	}
+
+	if err := a.startSession(w, r, user.ID); err != nil {
+		log.Printf("signup: %v", err)
+		writeError(w, http.StatusInternalServerError, "something went wrong")
+		return
+	}
+	writeJSON(w, http.StatusCreated, userResponse{User: user})
+}
+
+// validateSignup returns a message for the first invalid field, or "".
+func validateSignup(name, email, password string) string {
+	switch {
+	case name == "":
+		return "name is required"
+	case utf8.RuneCountInString(name) > maxNameLength:
+		return "name must be at most 100 characters"
+	case !validEmail(email):
+		return "enter a valid email address"
+	case utf8.RuneCountInString(password) < minPasswordLength:
+		return "password must be at least 8 characters"
+	case len(password) > maxPasswordBytes:
+		return "password must be at most 72 bytes"
+	}
+	return ""
+}
+
+// validEmail accepts a bare address only. mail.ParseAddress also accepts
+// forms like "Name <a@b.c>", so the parsed address must equal the input.
+func validEmail(email string) bool {
+	if len(email) > maxEmailLength {
+		return false
+	}
+	addr, err := mail.ParseAddress(email)
+	return err == nil && addr.Address == email
 }
 
 func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {

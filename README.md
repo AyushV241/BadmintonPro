@@ -2,8 +2,8 @@
 
 A badminton club and match management app — Next.js frontend, Go backend, Postgres.
 
-> **Status:** early scaffold. Sign-in works end to end, with email + password
-> or Google, against a real database. Players, matches and rankings are not
+> **Status:** early scaffold. Sign-up and sign-in work end to end, with email +
+> password or Google, against a real database. Players, matches and rankings are not
 > built yet.
 
 ## Stack
@@ -184,6 +184,7 @@ responses are JSON except the OAuth redirects.
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | Liveness check |
+| `POST` | `/api/signup` | — | Name + email + password; creates an unverified account and sets the session cookie. `409` if the email is taken |
 | `POST` | `/api/login` | — | Email + password; sets the session cookie |
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
 | `GET` | `/api/me` | cookie | The signed-in user |
@@ -209,6 +210,15 @@ appears in a response body, and page scripts can't read it.
 Failed password logins return `401` with the same message whether the email is
 unknown, the password is wrong, or the account has no password (Google-only),
 so the endpoint can't be used to discover which accounts exist.
+
+Signup can't hide that yet: its `409` tells anyone whether an email is
+registered. Closing that needs email verification (always answer "check your
+inbox" and notify an existing owner by email instead). Until then it's a known
+tradeoff, and rate limiting is the first mitigation to add.
+
+Signup validates in the handler: a name of 1–100 characters, a bare email
+address, and a password of 8 characters to 72 bytes (bcrypt ignores anything
+longer). The email is stored lowercased and **unverified**.
 
 When a provider sign-in fails, the callback redirects to `/login?error=<code>`
 with one of `cancelled`, `expired` (bad or missing `state`), `conflict` or
@@ -237,6 +247,12 @@ decides what happens:
 
 Password signup with an email any account already uses is refused, so nobody
 can attach a password to someone else's Google account.
+
+Because nothing verifies emails yet, every password signup is unverified. So a
+user who signs up with a password and later chooses "Continue with Google" for
+the same email hits the takeover row: they get in with Google, but their
+password is deleted. Once email verification exists, verified users will keep
+their password instead (the attach row).
 
 The takeover row prevents *pre-account hijacking*. Anyone can register a
 password account with an email they don't own. If the real owner then signs
@@ -323,7 +339,7 @@ BadmintonPro/
 ├── backend/
 │   ├── main.go              # startup, provider setup, graceful shutdown
 │   ├── env.go               # loads backend/.env and ../.env
-│   ├── api.go               # routes, password login, /api/me
+│   ├── api.go               # routes, signup, password login, /api/me
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
 │   ├── link.go              # account-linking rules
@@ -338,6 +354,7 @@ BadmintonPro/
     ├── app/
     │   ├── page.tsx           # redirects to /login
     │   ├── login/page.tsx     # login form
+    │   ├── signup/page.tsx    # signup form
     │   └── dashboard/page.tsx # signed-in landing page
     ├── lib/api.ts             # typed API client
     └── next.config.ts         # proxies /api/* to the backend
@@ -349,11 +366,11 @@ Deliberate shortcuts, not oversights:
 
 - **Tokens are opaque random strings**, not JWTs — fine, but it means every
   authenticated request hits the database.
-- **No signup, email verification, password reset, "set a password" or
-  "connect Google" settings yet.** The store already enforces the rules those
+- **No email verification, password reset, "set a password" or "connect
+  Google" settings yet.** The store already enforces the rules those
   flows depend on. Verification emails will need an email service; locally
   the plan is to log the link.
-- **No rate limiting** on the login endpoint.
+- **No rate limiting** on the login or signup endpoints.
 - **Apple will need `SameSite=None; Secure` on the OAuth flow cookie**, and so
   HTTPS. Its callback is a cross-site POST, which `Lax` cookies aren't sent on.
   Google is unaffected.
