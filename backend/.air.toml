@@ -1,0 +1,43 @@
+#:schema https://json.schemastore.org/any.json
+# Hot reload for the API server: `air` (run from backend/) rebuilds and
+# restarts it whenever a watched file is saved. Adapted from compass's .air.toml.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/badmintonpro-server ."
+entrypoint = ["./tmp/badmintonpro-server"]
+# No env_files: env.go already loads .env and ../.env at startup, and air runs
+# the binary from backend/, so those relative paths resolve the same way.
+# env: .env is read at startup, so editing it needs a restart. .sql is not
+# watched: migrations never run on startup (see main.go), only via -migrate.
+include_ext = ["go", "env"]
+exclude_dir = ["tmp", "vendor", "testdata"]
+exclude_regex = ["_test\\.go"]
+exclude_unchanged = true
+# Batch rapid saves (format-on-save, multi-file edits) into one rebuild.
+delay = 500 # ms
+# Keep the last good server running when the build fails.
+stop_on_error = true
+# SIGINT first so main.go's graceful shutdown runs, closing the DB pool.
+send_interrupt = true
+# air waits this long after SIGINT before SIGKILL. An idle local server shuts
+# down almost instantly, so this stays short to keep restarts fast.
+kill_delay = 500 # ms
+
+[log]
+main_only = true
+silent = true
+
+[color]
+main = "magenta"
+watcher = "cyan"
+build = "yellow"
+runner = "green"
+
+[misc]
+clean_on_exit = true
+
+[screen]
+clear_on_rebuild = true
+keep_scroll = true

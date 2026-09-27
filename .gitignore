@@ -5,14 +5,12 @@
 backend/backend
 backend/*.exe
 backend/*.test
+backend/tmp/
 
 # env
 .env
 .env.local
 !.env.example
-
-# boilerplate from create-next-app, superseded by the root README
-frontend/README.md
 
 # local docker-compose overrides
 .env

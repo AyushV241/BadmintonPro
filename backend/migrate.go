@@ -18,9 +18,10 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// runMigrations applies every pending migration. It is safe to call on every
-// boot: golang-migrate records the current version in a schema_migrations
-// table and skips anything already applied.
+// runMigrations applies every pending migration. It only runs when the server
+// is started with -migrate, never on a normal boot. golang-migrate records the
+// current version in a schema_migrations table and skips anything already
+// applied.
 func runMigrations(databaseURL string) error {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {

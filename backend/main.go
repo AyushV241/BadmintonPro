@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,12 @@ func main() {
 }
 
 func run() error {
+	// Migrations are never applied on startup: the database can be shared, and
+	// every developer's server (and every air reload) would otherwise migrate
+	// it. Apply them deliberately, once, with `go run . -migrate`.
+	migrateOnly := flag.Bool("migrate", false, "apply pending migrations to DATABASE_URL and exit")
+	flag.Parse()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -34,9 +41,13 @@ func run() error {
 
 	databaseURL := envOr("DATABASE_URL", defaultDatabaseURL)
 
-	log.Print("applying migrations…")
-	if err := runMigrations(databaseURL); err != nil {
-		return err
+	if *migrateOnly {
+		log.Print("applying migrations…")
+		if err := runMigrations(databaseURL); err != nil {
+			return err
+		}
+		log.Print("migrations up to date")
+		return nil
 	}
 
 	store, err := NewPostgresStore(ctx, databaseURL)
