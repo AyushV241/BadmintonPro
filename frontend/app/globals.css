@@ -1,3 +1,6 @@
+/* MUI's styles live in the `mui` layer (see components/ui/provider/UIProvider.tsx).
+   Ordering it before `utilities` lets Tailwind classes override MUI. */
+@layer theme, base, mui, components, utilities;
 @import "tailwindcss";
 
 :root {
