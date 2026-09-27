@@ -9,9 +9,14 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 )
 
-const defaultDatabaseURL = "postgres://badminton:badminton@localhost:5432/badmintonpro?sslmode=disable"
+const (
+	defaultDatabaseURL       = "postgres://badminton:badminton@localhost:5432/badmintonpro?sslmode=disable"
+	defaultGoogleRedirectURL = "http://localhost:3000/api/auth/google/callback"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -22,6 +27,10 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := loadDotEnv(); err != nil {
+		return err
+	}
 
 	databaseURL := envOr("DATABASE_URL", defaultDatabaseURL)
 
@@ -40,11 +49,16 @@ func run() error {
 		return err
 	}
 
+	providers, err := configureProviders()
+	if err != nil {
+		return err
+	}
+
 	go pruneSessions(ctx, store)
 
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           withCORS(envOr("CORS_ORIGIN", "http://localhost:3000"), NewAPI(store).Routes()),
+		Handler:           NewAPI(store, providers, os.Getenv("COOKIE_SECURE") == "true").Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -64,13 +78,39 @@ func run() error {
 	return nil
 }
 
-// seedDemoUser creates a login for local development. It is idempotent, so
-// restarting against an existing database is not an error.
+// configureProviders enables each external login whose credentials are set.
+// A provider that is configured but broken fails startup rather than quietly
+// disappearing from the login page.
+func configureProviders() (*oauth.Registry, error) {
+	registry := oauth.NewRegistry()
+
+	if clientID := os.Getenv("GOOGLE_CLIENT_ID"); clientID != "" {
+		google, err := oauth.NewGoogle(
+			clientID,
+			os.Getenv("GOOGLE_CLIENT_SECRET"),
+			envOr("GOOGLE_REDIRECT_URL", defaultGoogleRedirectURL),
+		)
+		if err != nil {
+			return nil, err
+		}
+		registry.Register(google)
+	}
+
+	if names := registry.Names(); len(names) > 0 {
+		log.Printf("external login providers: %v", names)
+	} else {
+		log.Print("no external login providers configured (set GOOGLE_CLIENT_ID to enable Google)")
+	}
+	return registry, nil
+}
+
+// seedDemoUser creates a password login for local development. It is
+// idempotent, so restarting against an existing database is not an error.
 func seedDemoUser(ctx context.Context, store Store) error {
 	email := envOr("DEMO_EMAIL", "player@badmintonpro.local")
 	password := envOr("DEMO_PASSWORD", "smash123")
 
-	err := store.CreateUser(ctx, "usr_1", "Demo Player", email, password)
+	_, err := store.CreateUser(ctx, NewUser{ID: "usr_1", Name: "Demo Player", Email: email, Password: password})
 	switch {
 	case errors.Is(err, ErrEmailTaken):
 		log.Printf("demo login: %s (already seeded)", email)

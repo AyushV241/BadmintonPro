@@ -7,147 +7,175 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 )
 
-func newTestAPI(t *testing.T) http.Handler {
+const (
+	demoEmail    = "player@badmintonpro.local"
+	demoPassword = "smash123"
+)
+
+func newTestAPI(t *testing.T, providers ...oauth.Provider) (http.Handler, *MemoryStore) {
 	t.Helper()
 	store := NewMemoryStore()
-	if err := store.CreateUser(context.Background(), "usr_1", "Demo Player", "player@badmintonpro.local", "smash123"); err != nil {
+	if _, err := store.CreateUser(context.Background(), NewUser{ID: "usr_1", Name: "Demo Player", Email: demoEmail, Password: demoPassword}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	return NewAPI(store).Routes()
+	return NewAPI(store, oauth.NewRegistry(providers...), false).Routes(), store
 }
 
-func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
 }
 
-func TestLoginSucceedsWithValidCredentials(t *testing.T) {
-	h := newTestAPI(t)
-	rec := post(t, h, "/api/login", `{"email":"player@badmintonpro.local","password":"smash123"}`)
+func postLogin(h http.Handler, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return serve(h, req)
+}
 
+func findCookie(rec *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func getMe(h http.Handler, session *http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	if session != nil {
+		req.AddCookie(session)
+	}
+	return serve(h, req)
+}
+
+func TestLoginSetsHttpOnlySessionCookie(t *testing.T) {
+	h, _ := newTestAPI(t)
+	rec := postLogin(h, `{"email":"player@badmintonpro.local","password":"smash123"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body)
 	}
 
-	var resp loginResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	c := findCookie(rec, sessionCookieName)
+	if c == nil || c.Value == "" {
+		t.Fatal("expected a session cookie")
 	}
-	if resp.Token == "" {
-		t.Error("expected a session token")
+	if !c.HttpOnly {
+		t.Error("session cookie must be HttpOnly so page scripts cannot read it")
 	}
-	if resp.User.Email != "player@badmintonpro.local" {
-		t.Errorf("email = %q, want the demo user", resp.User.Email)
+	if c.SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v, want Lax", c.SameSite)
+	}
+
+	// The token travels only in the cookie, never the body.
+	if strings.Contains(rec.Body.String(), c.Value) {
+		t.Error("response body leaks the session token")
+	}
+	var resp userResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.User.Email != demoEmail {
+		t.Errorf("user = %+v", resp.User)
 	}
 }
 
 func TestLoginIsCaseInsensitiveOnEmail(t *testing.T) {
-	h := newTestAPI(t)
-	rec := post(t, h, "/api/login", `{"email":"  PLAYER@BadmintonPro.local ","password":"smash123"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body)
+	h, _ := newTestAPI(t)
+	if rec := postLogin(h, `{"email":"  PLAYER@BadmintonPro.local ","password":"smash123"}`); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }
 
-func TestLoginRejectsBadCredentials(t *testing.T) {
-	h := newTestAPI(t)
+func TestLoginRejectsBadCredentialsIdentically(t *testing.T) {
+	h, store := newTestAPI(t)
+	// An account with no password at all must fail the same way.
+	store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: "google", Subject: "g", Email: "googleonly@gmail.com", EmailVerified: true})
 
-	cases := map[string]string{
-		"wrong password": `{"email":"player@badmintonpro.local","password":"nope"}`,
-		"unknown email":  `{"email":"nobody@badmintonpro.local","password":"smash123"}`,
-	}
-
-	for name, body := range cases {
+	for name, body := range map[string]string{
+		"wrong password":          `{"email":"player@badmintonpro.local","password":"nope"}`,
+		"unknown email":           `{"email":"nobody@badmintonpro.local","password":"smash123"}`,
+		"account has no password": `{"email":"googleonly@gmail.com","password":"anything"}`,
+	} {
 		t.Run(name, func(t *testing.T) {
-			rec := post(t, h, "/api/login", body)
+			rec := postLogin(h, body)
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", rec.Code)
 			}
-			// Both failures must look identical, or the endpoint leaks which
-			// emails are registered.
 			var resp errorResponse
 			json.Unmarshal(rec.Body.Bytes(), &resp)
 			if resp.Error != "incorrect email or password" {
 				t.Errorf("error = %q, want the generic message", resp.Error)
+			}
+			if findCookie(rec, sessionCookieName) != nil {
+				t.Error("failed login must not set a session cookie")
 			}
 		})
 	}
 }
 
 func TestLoginRejectsMalformedBody(t *testing.T) {
-	h := newTestAPI(t)
+	h, _ := newTestAPI(t)
 	for name, body := range map[string]string{
 		"not json":       `{`,
 		"missing fields": `{}`,
 		"empty password": `{"email":"player@badmintonpro.local","password":""}`,
+		"unknown field":  `{"email":"a@b.c","password":"x","admin":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if rec := post(t, h, "/api/login", body); rec.Code != http.StatusBadRequest {
+			if rec := postLogin(h, body); rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400", rec.Code)
 			}
 		})
 	}
 }
 
-func TestMeRequiresValidToken(t *testing.T) {
-	h := newTestAPI(t)
+func TestMeRequiresSessionCookie(t *testing.T) {
+	h, _ := newTestAPI(t)
+	session := findCookie(postLogin(h, `{"email":"player@badmintonpro.local","password":"smash123"}`), sessionCookieName)
 
-	login := post(t, h, "/api/login", `{"email":"player@badmintonpro.local","password":"smash123"}`)
-	var resp loginResponse
-	json.Unmarshal(login.Body.Bytes(), &resp)
-
-	t.Run("with token", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-		req.Header.Set("Authorization", "Bearer "+resp.Token)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-
+	t.Run("with cookie", func(t *testing.T) {
+		rec := getMe(h, session)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
-		var user User
-		json.Unmarshal(rec.Body.Bytes(), &user)
-		if user.ID != "usr_1" {
-			t.Errorf("id = %q, want usr_1", user.ID)
+		var resp userResponse
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.User.ID != "usr_1" {
+			t.Errorf("id = %q, want usr_1", resp.User.ID)
 		}
 	})
-
-	t.Run("without token", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
+	t.Run("without cookie", func(t *testing.T) {
+		if rec := getMe(h, nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
+	t.Run("with forged cookie", func(t *testing.T) {
+		if rec := getMe(h, &http.Cookie{Name: sessionCookieName, Value: "forged"}); rec.Code != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
 	})
 }
 
-func TestLogoutInvalidatesToken(t *testing.T) {
-	h := newTestAPI(t)
-
-	login := post(t, h, "/api/login", `{"email":"player@badmintonpro.local","password":"smash123"}`)
-	var resp loginResponse
-	json.Unmarshal(login.Body.Bytes(), &resp)
+func TestLogoutRevokesSessionAndClearsCookie(t *testing.T) {
+	h, _ := newTestAPI(t)
+	session := findCookie(postLogin(h, `{"email":"player@badmintonpro.local","password":"smash123"}`), sessionCookieName)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
-	req.Header.Set("Authorization", "Bearer "+resp.Token)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	req.AddCookie(session)
+	rec := serve(h, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("logout status = %d, want 204", rec.Code)
 	}
+	if c := findCookie(rec, sessionCookieName); c == nil || c.MaxAge >= 0 {
+		t.Error("logout must expire the session cookie")
+	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
-	req.Header.Set("Authorization", "Bearer "+resp.Token)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
+	// Revoked server-side too: replaying the old cookie must fail.
+	if rec := getMe(h, session); rec.Code != http.StatusUnauthorized {
 		t.Errorf("after logout /api/me = %d, want 401", rec.Code)
 	}
 }

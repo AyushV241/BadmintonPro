@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type memoryAccount struct {
+type memoryUser struct {
 	User
-	passwordHash []byte
+	passwordHash []byte // nil when the account has no password
+}
+
+type identityKey struct {
+	provider, subject string
 }
 
 type memorySession struct {
@@ -18,90 +24,162 @@ type memorySession struct {
 	expiresAt time.Time
 }
 
-// MemoryStore keeps everything in process. It backs the test suite and is a
-// useful fallback when Postgres is not running; data is lost on restart.
+// MemoryStore keeps everything in process. It backs the test suite; data is
+// lost on restart.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	accounts map[string]*memoryAccount // keyed by normalised email
-	byID     map[string]*memoryAccount // same accounts, keyed by ID
-	sessions map[string]memorySession  // keyed by token
+	mu         sync.Mutex
+	users      map[string]*memoryUser // keyed by ID
+	byEmail    map[string]string      // normalised email → user ID
+	identities map[identityKey]string // → user ID
+	sessions   map[string]memorySession
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		accounts: make(map[string]*memoryAccount),
-		byID:     make(map[string]*memoryAccount),
-		sessions: make(map[string]memorySession),
+		users:      make(map[string]*memoryUser),
+		byEmail:    make(map[string]string),
+		identities: make(map[identityKey]string),
+		sessions:   make(map[string]memorySession),
 	}
 }
 
-func (s *MemoryStore) CreateUser(_ context.Context, id, name, email, password string) error {
-	hash, err := hashPassword(password)
+func (s *MemoryStore) CreateUser(_ context.Context, nu NewUser) (User, error) {
+	hash, err := hashPassword(nu.Password)
 	if err != nil {
-		return err
+		return User{}, err
 	}
-
-	key := normaliseEmail(email)
+	id := nu.ID
+	if id == "" {
+		if id, err = newUserID(); err != nil {
+			return User{}, err
+		}
+	}
+	email := normaliseEmail(nu.Email)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.accounts[key]; exists {
-		return ErrEmailTaken
+
+	if _, taken := s.byEmail[email]; taken {
+		return User{}, ErrEmailTaken
 	}
-	acct := &memoryAccount{
-		User:         User{ID: id, Name: name, Email: key},
+	u := &memoryUser{
+		User:         User{ID: id, Name: nu.Name, Email: email, EmailVerified: nu.EmailVerified},
 		passwordHash: hash,
 	}
-	s.accounts[key] = acct
-	s.byID[id] = acct
-	return nil
+	s.users[id] = u
+	s.byEmail[email] = id
+	return u.User, nil
 }
 
-func (s *MemoryStore) Authenticate(_ context.Context, email, password string) (User, string, error) {
-	s.mu.RLock()
-	acct, ok := s.accounts[normaliseEmail(email)]
-	s.mu.RUnlock()
-
-	if !ok {
-		equaliseTiming(password)
-		return User{}, "", ErrInvalidCredentials
-	}
-	if err := bcrypt.CompareHashAndPassword(acct.passwordHash, []byte(password)); err != nil {
-		return User{}, "", ErrInvalidCredentials
-	}
-
-	token, err := newToken()
-	if err != nil {
-		return User{}, "", err
-	}
-
+func (s *MemoryStore) VerifyPassword(_ context.Context, email, password string) (User, error) {
 	s.mu.Lock()
-	s.sessions[token] = memorySession{userID: acct.ID, expiresAt: time.Now().Add(sessionTTL)}
+	var (
+		user User
+		hash []byte
+	)
+	if id, ok := s.byEmail[normaliseEmail(email)]; ok {
+		user, hash = s.users[id].User, s.users[id].passwordHash
+	}
 	s.mu.Unlock()
 
-	return acct.User, token, nil
+	// bcrypt runs outside the lock so slow comparisons don't serialise logins.
+	if hash == nil {
+		equaliseTiming(password)
+		return User{}, ErrInvalidCredentials
+	}
+	if err := bcrypt.CompareHashAndPassword(hash, []byte(password)); err != nil {
+		return User{}, ErrInvalidCredentials
+	}
+	return user, nil
 }
 
-func (s *MemoryStore) UserForToken(ctx context.Context, token string) (User, error) {
-	s.mu.RLock()
-	sess, ok := s.sessions[token]
-	s.mu.RUnlock()
+func (s *MemoryStore) ResolveExternalLogin(_ context.Context, ident oauth.Identity) (User, error) {
+	if ident.Provider == "" || ident.Subject == "" {
+		return User{}, errors.New("identity is missing provider or subject")
+	}
+	key := identityKey{ident.Provider, ident.Subject}
+	email := normaliseEmail(ident.Email)
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	linkedID, linked := s.identities[key]
+
+	var owner *emailOwner
+	if !linked && email != "" {
+		if id, ok := s.byEmail[email]; ok {
+			owner = &emailOwner{userID: id, emailVerified: s.users[id].EmailVerified}
+		}
+	}
+
+	switch decideLink(linked, owner, ident.EmailVerified) {
+	case linkLogin:
+		return s.users[linkedID].User, nil
+
+	case linkCreate:
+		id, err := newUserID()
+		if err != nil {
+			return User{}, err
+		}
+		u := &memoryUser{User: User{ID: id, Name: displayName(ident)}}
+		// Only an email the provider vouches for may claim the address.
+		if ident.EmailVerified && email != "" {
+			u.Email, u.EmailVerified = email, true
+			s.byEmail[email] = id
+		}
+		s.users[id] = u
+		s.identities[key] = id
+		return u.User, nil
+
+	case linkAttach:
+		s.identities[key] = owner.userID
+		return s.users[owner.userID].User, nil
+
+	case linkTakeover:
+		u := s.users[owner.userID]
+		u.passwordHash = nil
+		u.EmailVerified = true
+		for token, sess := range s.sessions {
+			if sess.userID == owner.userID {
+				delete(s.sessions, token)
+			}
+		}
+		s.identities[key] = owner.userID
+		return u.User, nil
+
+	default: // linkRefuse
+		return User{}, ErrAccountConflict
+	}
+}
+
+func (s *MemoryStore) CreateSession(_ context.Context, userID string) (string, error) {
+	token, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.sessions[token] = memorySession{userID: userID, expiresAt: time.Now().Add(sessionTTL)}
+	s.mu.Unlock()
+	return token, nil
+}
+
+func (s *MemoryStore) UserForToken(_ context.Context, token string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sess, ok := s.sessions[token]
 	if !ok {
 		return User{}, ErrInvalidToken
 	}
 	if time.Now().After(sess.expiresAt) {
-		s.Revoke(ctx, token)
+		delete(s.sessions, token)
 		return User{}, ErrInvalidToken
 	}
-
-	s.mu.RLock()
-	acct, ok := s.byID[sess.userID]
-	s.mu.RUnlock()
+	u, ok := s.users[sess.userID]
 	if !ok {
 		return User{}, ErrInvalidToken
 	}
-	return acct.User, nil
+	return u.User, nil
 }
 
 func (s *MemoryStore) Revoke(_ context.Context, token string) error {

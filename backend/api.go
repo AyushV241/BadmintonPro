@@ -6,22 +6,37 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 )
 
 type API struct {
-	store Store
+	store     Store
+	providers *oauth.Registry
+	// cookieSecure marks cookies Secure. It must be true anywhere served over
+	// HTTPS; it is false locally because http://localhost has no TLS.
+	cookieSecure bool
 }
 
-func NewAPI(store Store) *API {
-	return &API{store: store}
+func NewAPI(store Store, providers *oauth.Registry, cookieSecure bool) *API {
+	return &API{store: store, providers: providers, cookieSecure: cookieSecure}
 }
 
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", a.handleHealth)
+
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/me", a.handleMe)
+
+	// Provider-agnostic: adding a provider means registering an adapter, not
+	// adding routes.
+	mux.HandleFunc("GET /api/auth/providers", a.handleProviders)
+	mux.HandleFunc("GET /api/auth/{provider}/start", a.handleOAuthStart)
+	// Apple posts its callback as a form, so the callback accepts both.
+	mux.HandleFunc("GET /api/auth/{provider}/callback", a.handleOAuthCallback)
+	mux.HandleFunc("POST /api/auth/{provider}/callback", a.handleOAuthCallback)
 	return mux
 }
 
@@ -30,9 +45,8 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-type loginResponse struct {
-	Token string `json:"token"`
-	User  User   `json:"user"`
+type userResponse struct {
+	User User `json:"user"`
 }
 
 type errorResponse struct {
@@ -51,56 +65,56 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request body must be valid JSON with email and password")
 		return
 	}
-
 	if strings.TrimSpace(req.Email) == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "email and password are required")
 		return
 	}
 
-	user, token, err := a.store.Authenticate(r.Context(), req.Email, req.Password)
+	user, err := a.store.VerifyPassword(r.Context(), req.Email, req.Password)
+	if errors.Is(err, ErrInvalidCredentials) {
+		writeError(w, http.StatusUnauthorized, "incorrect email or password")
+		return
+	}
 	if err != nil {
-		if errors.Is(err, ErrInvalidCredentials) {
-			writeError(w, http.StatusUnauthorized, "incorrect email or password")
-			return
-		}
 		log.Printf("login: %v", err)
 		writeError(w, http.StatusInternalServerError, "something went wrong")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, loginResponse{Token: token, User: user})
+	if err := a.startSession(w, r, user.ID); err != nil {
+		log.Printf("login: %v", err)
+		writeError(w, http.StatusInternalServerError, "something went wrong")
+		return
+	}
+	writeJSON(w, http.StatusOK, userResponse{User: user})
 }
 
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if token := bearerToken(r); token != "" {
-		a.store.Revoke(r.Context(), token)
+	if token := sessionToken(r); token != "" {
+		if err := a.store.Revoke(r.Context(), token); err != nil {
+			log.Printf("logout: %v", err)
+		}
 	}
+	a.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
+	token := sessionToken(r)
 	if token == "" {
-		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-
 	user, err := a.store.UserForToken(r.Context(), token)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid or expired session")
+		writeError(w, http.StatusUnauthorized, "session expired or invalid")
 		return
 	}
-
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, userResponse{User: user})
 }
 
-func bearerToken(r *http.Request) string {
-	header := r.Header.Get("Authorization")
-	value, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(value)
+func (a *API) handleProviders(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string][]string{"providers": a.providers.Names()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -113,20 +127,4 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorResponse{Error: message})
-}
-
-// withCORS allows the Next.js dev server to call the API from another origin.
-func withCORS(origin string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Vary", "Origin")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

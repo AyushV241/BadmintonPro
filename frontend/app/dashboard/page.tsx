@@ -2,37 +2,24 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { logout, me, tokenStore, type User } from "@/lib/api";
+import { logout, me, type User } from "@/lib/api";
 
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
-    const token = tokenStore.get();
-    if (!token) {
-      router.replace("/login");
-      return;
-    }
-
-    // Verify the stored token is still valid server-side; it may have expired
-    // or been revoked since it was saved.
-    me(token)
+    // The session cookie is httpOnly, so the only way to know whether we are
+    // signed in is to ask the server.
+    me()
       .then(setUser)
-      .catch(() => {
-        tokenStore.clear();
-        router.replace("/login");
-      });
+      .catch(() => router.replace("/login"));
   }, [router]);
 
   async function handleSignOut() {
-    const token = tokenStore.get();
-    if (token) {
-      await logout(token).catch(() => {
-        /* the local session is cleared regardless */
-      });
-    }
-    tokenStore.clear();
+    await logout().catch(() => {
+      /* the cookie is cleared server-side; move on regardless */
+    });
     router.replace("/login");
   }
 
@@ -51,9 +38,16 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">
             Welcome, {user.name}
           </h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {user.email}
-          </p>
+          {user.email && (
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {user.email}
+              {user.emailVerified && (
+                <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
+                  verified
+                </span>
+              )}
+            </p>
+          )}
 
           <p className="mt-6 text-sm text-slate-600 dark:text-slate-300">
             You are signed in. Players, matches and rankings will live here.
