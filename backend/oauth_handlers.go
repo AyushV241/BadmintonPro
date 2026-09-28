@@ -46,7 +46,9 @@ func (a *API) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, provider.AuthURL(flow.State, flow.Nonce, flow.Verifier), http.StatusFound)
+	// The target is built by the registered provider from its fixed config,
+	// never from request input.
+	http.Redirect(w, r, provider.AuthURL(flow.State, flow.Nonce, flow.Verifier), http.StatusFound) //nolint:gosec // G710: provider-built URL
 }
 
 func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +65,7 @@ func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	// FormValue reads the query string and, for Apple's form_post, the body.
 	if providerErr := r.FormValue("error"); providerErr != "" {
-		log.Printf("oauth %s: provider returned error %q", name, providerErr)
+		log.Printf("oauth %s: provider returned error %q", provider.Name(), providerErr)
 		redirectToLogin(w, r, loginErrCancelled)
 		return
 	}
@@ -83,7 +85,7 @@ func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	ident, err := provider.Exchange(r.Context(), code, flow.Verifier, flow.Nonce)
 	if err != nil {
-		log.Printf("oauth %s: %v", name, err)
+		log.Printf("oauth %s: %v", provider.Name(), err)
 		redirectToLogin(w, r, loginErrFailed)
 		return
 	}
@@ -96,13 +98,13 @@ func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		log.Printf("oauth %s: resolve login: %v", name, err)
+		log.Printf("oauth %s: resolve login: %v", provider.Name(), err)
 		redirectToLogin(w, r, loginErrFailed)
 		return
 	}
 
 	if err := a.startSession(w, r, user.ID); err != nil {
-		log.Printf("oauth %s: %v", name, err)
+		log.Printf("oauth %s: %v", provider.Name(), err)
 		redirectToLogin(w, r, loginErrFailed)
 		return
 	}
@@ -125,7 +127,8 @@ func (a *API) setFlowCookie(w http.ResponseWriter, flow oauth.Flow) error {
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
+	// Secure comes from config: false only on http://localhost.
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is config-driven
 		Name:     flowCookieName,
 		Value:    base64.RawURLEncoding.EncodeToString(raw),
 		Path:     flowCookiePath,
@@ -138,7 +141,7 @@ func (a *API) setFlowCookie(w http.ResponseWriter, flow oauth.Flow) error {
 }
 
 func (a *API) clearFlowCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is config-driven
 		Name:     flowCookieName,
 		Value:    "",
 		Path:     flowCookiePath,

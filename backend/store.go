@@ -104,7 +104,9 @@ func newUserID() (string, error) {
 // equaliseTiming spends roughly as long as a real bcrypt comparison would, so
 // response latency does not reveal whether an account exists or has a password.
 func equaliseTiming(password string) {
-	bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+	// The result is irrelevant: the caller always fails the login. Only the
+	// time spent matters.
+	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 }
 
 var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password"), bcrypt.DefaultCost)

@@ -16,7 +16,7 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is config-driven
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
@@ -30,7 +30,7 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string
 }
 
 func (a *API) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is config-driven
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",

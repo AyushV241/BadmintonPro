@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	defaultDatabaseURL       = "postgres://badminton:badminton@localhost:5432/badmintonpro?sslmode=disable"
+	// Local Docker credentials, committed on purpose (see README "Database
+	// credentials"). Real environments set DATABASE_URL.
+	defaultDatabaseURL       = "postgres://badminton:badminton@localhost:5432/badmintonpro?sslmode=disable" //nolint:gosec // G101: local-only dev credentials
 	defaultGoogleRedirectURL = "http://localhost:3000/api/auth/google/callback"
 )
 
@@ -78,7 +80,9 @@ func run() error {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}()
 
 	log.Printf("BadmintonPro API listening on %s", srv.Addr)

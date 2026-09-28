@@ -1,0 +1,37 @@
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose   # HTTP response bodies are closed
+    - errorlint   # errors are compared with errors.Is/As, not ==
+    - gosec       # security problems (weak crypto, injection, file perms, …)
+    - misspell
+    - nolintlint  # every //nolint names the linter and says why
+    - unconvert   # redundant type conversions
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # A deferred Close on a handle that is only being released.
+        - (*database/sql.DB).Close
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    rules:
+      # G706 (log injection) flags every logged error that touched request
+      # data. The real fix is structured logging with log/slog, where values
+      # can't forge log lines; that migration is in TODO.md ("Request
+      # logging"). Remove this rule when it lands.
+      - linters: [gosec]
+        text: "G706"
+      # Test fixtures are full of fake passwords, cookies and URLs by design.
+      - path: _test\.go
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofmt

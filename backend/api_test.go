@@ -25,6 +25,23 @@ func newTestAPI(t *testing.T, providers ...oauth.Provider) (http.Handler, *Memor
 	return NewAPI(store, oauth.NewRegistry(providers...), false).Routes(), store
 }
 
+// decodeJSON fails the test if the body isn't valid JSON for v, so a broken
+// response can't pass as a zero-valued struct.
+func decodeJSON(t *testing.T, body []byte, v any) {
+	t.Helper()
+	if err := json.Unmarshal(body, v); err != nil {
+		t.Fatalf("decode response %q: %v", body, err)
+	}
+}
+
+// linkGoogleOnlyAccount creates an account that can only sign in with Google.
+func linkGoogleOnlyAccount(t *testing.T, store Store) {
+	t.Helper()
+	if _, err := store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: "google", Subject: "g", Email: "googleonly@gmail.com", EmailVerified: true}); err != nil {
+		t.Fatalf("seed Google-only account: %v", err)
+	}
+}
+
 func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -77,7 +94,7 @@ func TestLoginSetsHttpOnlySessionCookie(t *testing.T) {
 		t.Error("response body leaks the session token")
 	}
 	var resp userResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	decodeJSON(t, rec.Body.Bytes(), &resp)
 	if resp.User.Email != demoEmail {
 		t.Errorf("user = %+v", resp.User)
 	}
@@ -93,7 +110,7 @@ func TestLoginIsCaseInsensitiveOnEmail(t *testing.T) {
 func TestLoginRejectsBadCredentialsIdentically(t *testing.T) {
 	h, store := newTestAPI(t)
 	// An account with no password at all must fail the same way.
-	store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: "google", Subject: "g", Email: "googleonly@gmail.com", EmailVerified: true})
+	linkGoogleOnlyAccount(t, store)
 
 	for name, body := range map[string]string{
 		"wrong password":          `{"email":"player@badmintonpro.local","password":"nope"}`,
@@ -106,7 +123,7 @@ func TestLoginRejectsBadCredentialsIdentically(t *testing.T) {
 				t.Fatalf("status = %d, want 401", rec.Code)
 			}
 			var resp errorResponse
-			json.Unmarshal(rec.Body.Bytes(), &resp)
+			decodeJSON(t, rec.Body.Bytes(), &resp)
 			if resp.Error != "incorrect email or password" {
 				t.Errorf("error = %q, want the generic message", resp.Error)
 			}
@@ -143,7 +160,7 @@ func TestMeRequiresSessionCookie(t *testing.T) {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
 		var resp userResponse
-		json.Unmarshal(rec.Body.Bytes(), &resp)
+		decodeJSON(t, rec.Body.Bytes(), &resp)
 		if resp.User.ID != "usr_1" {
 			t.Errorf("id = %q, want usr_1", resp.User.ID)
 		}
@@ -202,7 +219,7 @@ func TestSignupCreatesUnverifiedAccountAndSignsIn(t *testing.T) {
 	}
 
 	var resp userResponse
-	json.Unmarshal(getMe(h, c).Body.Bytes(), &resp)
+	decodeJSON(t, getMe(h, c).Body.Bytes(), &resp)
 	if resp.User.Name != "New Player" || resp.User.Email != "new@example.com" {
 		t.Errorf("user = %+v, want trimmed name and normalised email", resp.User)
 	}
@@ -219,7 +236,7 @@ func TestSignupCreatesUnverifiedAccountAndSignsIn(t *testing.T) {
 
 func TestSignupRefusesTakenEmail(t *testing.T) {
 	h, store := newTestAPI(t)
-	store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: "google", Subject: "g", Email: "googleonly@gmail.com", EmailVerified: true})
+	linkGoogleOnlyAccount(t, store)
 
 	for name, email := range map[string]string{
 		"password account":         "player@badmintonpro.local",

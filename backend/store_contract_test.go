@@ -93,7 +93,9 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 
 	t.Run("password signup cannot claim a Google account's email", func(t *testing.T) {
 		s := newStore(t)
-		s.ResolveExternalLogin(ctx, google("g-3", "owned@gmail.com", true))
+		if _, err := s.ResolveExternalLogin(ctx, google("g-3", "owned@gmail.com", true)); err != nil {
+			t.Fatalf("seed Google account: %v", err)
+		}
 		if _, err := s.CreateUser(ctx, NewUser{Name: "X", Email: "owned@gmail.com", Password: "attacker-pw"}); !errors.Is(err, ErrEmailTaken) {
 			t.Errorf("err = %v, want ErrEmailTaken", err)
 		}
@@ -143,7 +145,9 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 
 	t.Run("refuse: provider will not vouch for a clashing email", func(t *testing.T) {
 		s := newStore(t)
-		s.CreateUser(ctx, NewUser{Name: "E", Email: "clash@example.com", Password: "pw-123456", EmailVerified: true})
+		if _, err := s.CreateUser(ctx, NewUser{Name: "E", Email: "clash@example.com", Password: "pw-123456", EmailVerified: true}); err != nil {
+			t.Fatalf("seed verified account: %v", err)
+		}
 		if _, err := s.ResolveExternalLogin(ctx, google("g-6", "clash@example.com", false)); !errors.Is(err, ErrAccountConflict) {
 			t.Errorf("err = %v, want ErrAccountConflict", err)
 		}

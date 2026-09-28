@@ -19,7 +19,7 @@ const (
 // Google's endpoints are fixed rather than fetched through OIDC discovery, so
 // the server can start without reaching Google. Signing keys are fetched on
 // the first login and cached.
-var googleEndpoint = oauth2.Endpoint{
+var googleEndpoint = oauth2.Endpoint{ //nolint:gosec // G101: public endpoint URLs, not credentials
 	AuthURL:   "https://accounts.google.com/o/oauth2/v2/auth",
 	TokenURL:  "https://oauth2.googleapis.com/token",
 	AuthStyle: oauth2.AuthStyleInParams,

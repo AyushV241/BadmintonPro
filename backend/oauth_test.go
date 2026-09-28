@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +89,7 @@ func TestProvidersEndpointListsRegisteredProviders(t *testing.T) {
 	rec := serve(h, httptest.NewRequest(http.MethodGet, "/api/auth/providers", nil))
 
 	var resp struct{ Providers []string }
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	decodeJSON(t, rec.Body.Bytes(), &resp)
 	if want := []string{"alpha", "zeta"}; !reflect.DeepEqual(resp.Providers, want) {
 		t.Errorf("providers = %v, want %v", resp.Providers, want)
 	}
@@ -135,7 +134,7 @@ func TestOAuthCallbackSignsInNewUser(t *testing.T) {
 	}
 	me := getMe(h, session)
 	var resp userResponse
-	json.Unmarshal(me.Body.Bytes(), &resp)
+	decodeJSON(t, me.Body.Bytes(), &resp)
 	if resp.User.Email != "new@example.com" || resp.User.Name != "New Person" {
 		t.Errorf("signed in as %+v", resp.User)
 	}
@@ -239,7 +238,7 @@ func TestOAuthIgnoresProviderClaimedByAdapter(t *testing.T) {
 	flow, state := startFlow(t, h, "fake")
 	rec := callback(h, "fake", flow, url.Values{"state": {state}, "code": {"code"}})
 	var resp userResponse
-	json.Unmarshal(getMe(h, findCookie(rec, sessionCookieName)).Body.Bytes(), &resp)
+	decodeJSON(t, getMe(h, findCookie(rec, sessionCookieName)).Body.Bytes(), &resp)
 	if resp.User.ID == victim.ID {
 		t.Fatal("adapter-supplied provider name was trusted")
 	}

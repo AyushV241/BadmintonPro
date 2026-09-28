@@ -20,11 +20,13 @@ func writeFile(t *testing.T, dir, name, content string) string {
 func unsetForTest(t *testing.T, key string) {
 	t.Helper()
 	if prev, ok := os.LookupEnv(key); ok {
-		t.Cleanup(func() { os.Setenv(key, prev) })
+		t.Cleanup(func() { _ = os.Setenv(key, prev) })
 	} else {
-		t.Cleanup(func() { os.Unsetenv(key) })
+		t.Cleanup(func() { _ = os.Unsetenv(key) })
 	}
-	os.Unsetenv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLoadDotEnvReadsEveryFile(t *testing.T) {
