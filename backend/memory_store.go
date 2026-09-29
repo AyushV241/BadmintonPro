@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,12 +25,14 @@ type MemoryStore struct {
 	mu         sync.Mutex
 	users      map[string]*User       // keyed by ID
 	identities map[identityKey]string // → user ID
+	usernames  map[string]string      // lowercased username → user ID
 	sessions   map[string]memorySession
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		users:      make(map[string]*User),
+		usernames:  make(map[string]string),
 		identities: make(map[identityKey]string),
 		sessions:   make(map[string]memorySession),
 	}
@@ -56,6 +59,41 @@ func (s *MemoryStore) ResolveExternalLogin(_ context.Context, ident oauth.Identi
 	s.users[id] = &u
 	s.identities[key] = id
 	return u, nil
+}
+
+func (s *MemoryStore) UpdateProfile(_ context.Context, userID string, p ProfileUpdate) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.users[userID]
+	if !ok {
+		return User{}, ErrNoSuchUser
+	}
+	key := strings.ToLower(p.Username)
+	if owner, taken := s.usernames[key]; taken && owner != userID {
+		return User{}, ErrUsernameTaken
+	}
+	delete(s.usernames, strings.ToLower(u.Username))
+	s.usernames[key] = userID
+
+	u.Name, u.Username = p.Name, p.Username
+	if p.Email != nil {
+		u.Email, u.EmailVerified = *p.Email, false
+	}
+	*u = withProfileStatus(*u)
+	return *u, nil
+}
+
+func (s *MemoryStore) SetVerifiedPhone(_ context.Context, userID, phone string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.users[userID]
+	if !ok {
+		return User{}, ErrNoSuchUser
+	}
+	u.Phone, u.PhoneVerified = phone, true
+	return *u, nil
 }
 
 func (s *MemoryStore) CreateSession(_ context.Context, userID string) (string, error) {

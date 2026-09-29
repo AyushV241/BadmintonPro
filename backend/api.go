@@ -29,6 +29,7 @@ func (a *API) Routes() http.Handler {
 
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/me", a.handleMe)
+	mux.HandleFunc("PUT /api/me/profile", a.handleUpdateProfile)
 
 	// Provider-agnostic: adding a provider means registering an adapter, not
 	// adding routes.
@@ -43,6 +44,9 @@ func (a *API) Routes() http.Handler {
 	if a.phone != nil {
 		mux.HandleFunc("POST /api/auth/phone/start", a.handlePhoneStart)
 		mux.HandleFunc("POST /api/auth/phone/verify", a.handlePhoneVerify)
+		// A signed-in (Google) user verifying a contact phone for the profile.
+		mux.HandleFunc("POST /api/me/phone/start", a.handleContactPhoneStart)
+		mux.HandleFunc("POST /api/me/phone/verify", a.handleContactPhoneVerify)
 	}
 	return mux
 }
@@ -75,17 +79,9 @@ func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
-	token := sessionToken(r)
-	if token == "" {
-		writeError(w, http.StatusUnauthorized, "not signed in")
-		return
+	if user, ok := a.requireUser(w, r); ok {
+		writeJSON(w, http.StatusOK, userResponse{User: user})
 	}
-	user, err := a.store.UserForToken(r.Context(), token)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "session expired or invalid")
-		return
-	}
-	writeJSON(w, http.StatusOK, userResponse{User: user})
 }
 
 func (a *API) handleProviders(w http.ResponseWriter, r *http.Request) {

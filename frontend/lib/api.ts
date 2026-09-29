@@ -5,8 +5,16 @@
 export type User = {
   id: string;
   name: string;
+  username: string;
+  /** Contact details, never ways to sign in. */
   email: string;
   emailVerified: boolean;
+  phone: string;
+  phoneVerified: boolean;
+  /** How the account signs in: "phone", "google", ... */
+  signInMethod: string;
+  /** False until "Set up your profile" has a name and username. */
+  profileComplete: boolean;
 };
 
 /** Thrown for any non-2xx response, carrying the API's message. */
@@ -108,4 +116,47 @@ export async function verifyPhoneLogin(
  */
 export function providerLoginUrl(provider: string): string {
   return `/api/auth/${encodeURIComponent(provider)}/start`;
+}
+
+export type ProfileUpdate = {
+  name: string;
+  username: string;
+  /**
+   * Contact email, for accounts without a verified one. Omit to leave it
+   * unchanged; "" clears it. Stored unverified.
+   */
+  email?: string;
+};
+
+/** Saves the profile step. 409 means the username is taken. */
+export async function updateProfile(profile: ProfileUpdate): Promise<User> {
+  const { user } = await request<{ user: User }>("/api/me/profile", {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
+  return user;
+}
+
+/**
+ * Sends a code to a phone a signed-in user wants on their profile. Resolves
+ * to the number in international format, which verifyContactPhone needs.
+ */
+export async function startContactPhone(phone: string): Promise<string> {
+  const res = await request<{ phone: string }>("/api/me/phone/start", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
+  return res.phone;
+}
+
+/** Checks the code and saves the phone as verified contact information. */
+export async function verifyContactPhone(
+  phone: string,
+  code: string,
+): Promise<User> {
+  const { user } = await request<{ user: User }>("/api/me/phone/verify", {
+    method: "POST",
+    body: JSON.stringify({ phone, code }),
+  });
+  return user;
 }

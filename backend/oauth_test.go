@@ -118,7 +118,7 @@ func TestOAuthCallbackSignsInNewUser(t *testing.T) {
 
 	flow, state := startFlow(t, h, "fake")
 	rec := callback(h, "fake", flow, url.Values{"state": {state}, "code": {"good-code"}})
-	assertRedirect(t, rec, "/dashboard")
+	assertRedirect(t, rec, "/setup-profile")
 
 	// Secrets generated at start must reach the exchange unchanged.
 	if fake.exchangeVerifier != fake.authVerifier || fake.exchangeNonce != fake.authNonce {
@@ -152,7 +152,7 @@ func TestOAuthCallbackAcceptsFormPost(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(flow)
 
-	assertRedirect(t, serve(h, req), "/dashboard")
+	assertRedirect(t, serve(h, req), "/setup-profile")
 }
 
 func TestOAuthCallbackRejectsBadState(t *testing.T) {

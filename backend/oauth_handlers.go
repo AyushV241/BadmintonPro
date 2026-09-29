@@ -103,8 +103,13 @@ func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 303 so a POST callback (Apple) becomes a GET of the dashboard.
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	// A first sign-in goes to the profile step. 303 so a POST callback (Apple)
+	// becomes a GET.
+	next := "/dashboard"
+	if !user.ProfileComplete {
+		next = "/setup-profile"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 func redirectToLogin(w http.ResponseWriter, r *http.Request, code string) {

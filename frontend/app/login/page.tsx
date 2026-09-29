@@ -2,8 +2,15 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ApiError, loginOptions, providerLoginUrl, type LoginOptions } from "@/lib/api";
-import { PhoneLogin } from "./PhoneLogin";
+import { PhoneCodeForm } from "@/components/auth/PhoneCodeForm";
+import {
+  ApiError,
+  loginOptions,
+  providerLoginUrl,
+  startPhoneLogin,
+  verifyPhoneLogin,
+  type LoginOptions,
+} from "@/lib/api";
 
 // Messages for the ?error= codes the backend's OAuth callback redirects with.
 const callbackErrors: Record<string, string> = {
@@ -92,7 +99,17 @@ export default function LoginPage() {
             </p>
           )}
 
-          {phoneEnabled && <PhoneLogin onSignedIn={() => router.push("/dashboard")} />}
+          {phoneEnabled && (
+            <PhoneCodeForm
+              start={startPhoneLogin}
+              verify={verifyPhoneLogin}
+              // A first sign-in goes to the profile step.
+              onVerified={(user) =>
+                router.push(user.profileComplete ? "/dashboard" : "/setup-profile")
+              }
+              verifyLabel="Verify and sign in"
+            />
+          )}
 
           {phoneEnabled && providers.length > 0 && <OrDivider />}
 

@@ -81,96 +81,33 @@ type phoneVerifyRequest struct {
 
 var sixDigits = regexp.MustCompile(`^\d{6}$`)
 
-// handlePhoneStart sends a code. The response is identical whether or not the
-// number already has an account, so it can't be used to discover accounts.
+// handlePhoneStart sends a sign-in code. The response is identical whether or
+// not the number already has an account, so it can't be used to discover
+// accounts.
 func (a *API) handlePhoneStart(w http.ResponseWriter, r *http.Request) {
-	pl := a.phone
 	var req phoneStartRequest
 	if !decodeSmallJSON(w, r, &req) {
 		return
 	}
-
-	ip := clientIP(r, pl.ClientIPHeader)
-	// Per-IP first, before any parsing work, then the number-specific limits.
-	if ok, wait := allowAll(rule{pl.limits.sendPerIP, ip}); !ok {
-		writeRateLimited(w, wait, "too many codes requested")
-		return
+	if phone, ok := a.sendCode(w, r, req.Phone); ok {
+		writeJSON(w, http.StatusOK, phoneStartResponse{Phone: phone})
 	}
-	phone, err := pl.Policy.normalize(req.Phone)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
-		return
-	}
-	if ok, wait := allowAll(
-		rule{pl.limits.sendCooldown, phone},
-		rule{pl.limits.sendPerPhone, phone},
-		rule{pl.limits.sendGlobal, "all"},
-	); !ok {
-		writeRateLimited(w, wait, "too many codes requested")
-		return
-	}
-
-	err = pl.Provider.Start(r.Context(), phone, otp.SMS)
-	switch {
-	case errors.Is(err, otp.ErrUnsupportedPhone):
-		writeError(w, http.StatusBadRequest, "this number can't receive SMS codes")
-		return
-	case errors.Is(err, otp.ErrTooManyAttempts):
-		writeRateLimited(w, 10*time.Minute, "too many codes requested")
-		return
-	case err != nil:
-		log.Printf("phone start (%s): %v", pl.Provider.Name(), err)
-		writeError(w, http.StatusBadGateway, "couldn't send a code right now, please try again")
-		return
-	}
-	writeJSON(w, http.StatusOK, phoneStartResponse{Phone: phone})
 }
 
 // handlePhoneVerify checks a code and signs the number's account in, creating
 // the account on its first login.
 func (a *API) handlePhoneVerify(w http.ResponseWriter, r *http.Request) {
-	pl := a.phone
 	var req phoneVerifyRequest
 	if !decodeSmallJSON(w, r, &req) {
 		return
 	}
-
-	ip := clientIP(r, pl.ClientIPHeader)
-	if ok, wait := allowAll(rule{pl.limits.checkPerIP, ip}); !ok {
-		writeRateLimited(w, wait, "too many attempts")
-		return
-	}
-	phone, err := pl.Policy.normalize(req.Phone)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
-		return
-	}
-	if ok, wait := allowAll(rule{pl.limits.checkPerPhone, phone}); !ok {
-		writeRateLimited(w, wait, "too many attempts")
-		return
-	}
-	if !sixDigits.MatchString(req.Code) {
-		writeError(w, http.StatusUnauthorized, "incorrect or expired code")
-		return
-	}
-
-	err = pl.Provider.Check(r.Context(), phone, req.Code)
-	switch {
-	case errors.Is(err, otp.ErrInvalidCode):
-		writeError(w, http.StatusUnauthorized, "incorrect or expired code")
-		return
-	case errors.Is(err, otp.ErrTooManyAttempts):
-		writeRateLimited(w, 10*time.Minute, "too many attempts, request a new code")
-		return
-	case err != nil:
-		log.Printf("phone verify (%s): %v", pl.Provider.Name(), err)
-		writeError(w, http.StatusBadGateway, "couldn't check the code right now, please try again")
+	phone, ok := a.checkCode(w, r, req.Phone, req.Code)
+	if !ok {
 		return
 	}
 
 	// No email, and never EmailVerified: a verified phone proves nothing about
-	// an email address, so decideLink can only create or log in, never attach
-	// to or take over an email account.
+	// an email address.
 	user, err := a.store.ResolveExternalLogin(r.Context(), oauth.Identity{
 		Provider: phoneIdentityProvider,
 		Subject:  phone,
@@ -186,6 +123,86 @@ func (a *API) handlePhoneVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, userResponse{User: user})
+}
+
+// sendCode normalises raw, applies the send limits and sends a code. It is
+// shared by phone sign-in and by verifying a contact phone, so both have the
+// same limits. On failure it has already written the response.
+func (a *API) sendCode(w http.ResponseWriter, r *http.Request, raw string) (string, bool) {
+	pl := a.phone
+	ip := clientIP(r, pl.ClientIPHeader)
+	// Per-IP first, before any parsing work, then the number-specific limits.
+	if ok, wait := allowAll(rule{pl.limits.sendPerIP, ip}); !ok {
+		writeRateLimited(w, wait, "too many codes requested")
+		return "", false
+	}
+	phone, err := pl.Policy.normalize(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
+		return "", false
+	}
+	if ok, wait := allowAll(
+		rule{pl.limits.sendCooldown, phone},
+		rule{pl.limits.sendPerPhone, phone},
+		rule{pl.limits.sendGlobal, "all"},
+	); !ok {
+		writeRateLimited(w, wait, "too many codes requested")
+		return "", false
+	}
+
+	err = pl.Provider.Start(r.Context(), phone, otp.SMS)
+	switch {
+	case errors.Is(err, otp.ErrUnsupportedPhone):
+		writeError(w, http.StatusBadRequest, "this number can't receive SMS codes")
+		return "", false
+	case errors.Is(err, otp.ErrTooManyAttempts):
+		writeRateLimited(w, 10*time.Minute, "too many codes requested")
+		return "", false
+	case err != nil:
+		log.Printf("send code (%s): %v", pl.Provider.Name(), err)
+		writeError(w, http.StatusBadGateway, "couldn't send a code right now, please try again")
+		return "", false
+	}
+	return phone, true
+}
+
+// checkCode normalises raw, applies the check limits and checks code. On
+// failure it has already written the response.
+func (a *API) checkCode(w http.ResponseWriter, r *http.Request, raw, code string) (string, bool) {
+	pl := a.phone
+	ip := clientIP(r, pl.ClientIPHeader)
+	if ok, wait := allowAll(rule{pl.limits.checkPerIP, ip}); !ok {
+		writeRateLimited(w, wait, "too many attempts")
+		return "", false
+	}
+	phone, err := pl.Policy.normalize(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
+		return "", false
+	}
+	if ok, wait := allowAll(rule{pl.limits.checkPerPhone, phone}); !ok {
+		writeRateLimited(w, wait, "too many attempts")
+		return "", false
+	}
+	if !sixDigits.MatchString(code) {
+		writeError(w, http.StatusUnauthorized, "incorrect or expired code")
+		return "", false
+	}
+
+	err = pl.Provider.Check(r.Context(), phone, code)
+	switch {
+	case errors.Is(err, otp.ErrInvalidCode):
+		writeError(w, http.StatusUnauthorized, "incorrect or expired code")
+		return "", false
+	case errors.Is(err, otp.ErrTooManyAttempts):
+		writeRateLimited(w, 10*time.Minute, "too many attempts, request a new code")
+		return "", false
+	case err != nil:
+		log.Printf("check code (%s): %v", pl.Provider.Name(), err)
+		writeError(w, http.StatusBadGateway, "couldn't check the code right now, please try again")
+		return "", false
+	}
+	return phone, true
 }
 
 func phoneErrorMessage(err error) string {

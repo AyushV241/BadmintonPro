@@ -233,12 +233,15 @@ responses are JSON except the OAuth redirects.
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | Liveness check |
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
-| `GET` | `/api/me` | cookie | The signed-in user |
+| `GET` | `/api/me` | cookie | The signed-in user, including `username`, contact `email`/`phone` with `emailVerified`/`phoneVerified`, `signInMethod` and `profileComplete` |
+| `PUT` | `/api/me/profile` | cookie | `{"name","username","email"?}`: the profile step. `email` only for accounts without a verified one (stored unverified; `""` clears it). `409` if the username is taken |
+| `POST` | `/api/me/phone/start` | cookie | `{"phone"}`: texts a code to a phone a Google account wants on its profile. Same limits as phone sign-in. `400` for phone accounts |
+| `POST` | `/api/me/phone/verify` | cookie | `{"phone","code"}`: saves it as a **verified contact phone**. It does not become a way to sign in |
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
 | `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` when limited. Only when `OTP_PROVIDER` is set |
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
-| `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/dashboard` |
+| `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/phone/start \
@@ -272,6 +275,24 @@ the cost of possible duplicates.
 
 A provider's email is stored only if the provider vouches for it
 (`EmailVerified`), and then only as contact information.
+
+### Set up your profile
+
+After the first sign-in, the frontend sends the user to `/setup-profile`, and
+keeps doing so from the dashboard until the profile is complete (a name and a
+username):
+
+| | Phone sign-in | Google sign-in |
+| --- | --- | --- |
+| Name | required | required, prefilled from Google |
+| Username | required | required |
+| Email | optional, stored **unverified** | Google's, **verified**, read-only |
+| Phone | the sign-in number, verified | optional, **verified by a code** before it's saved |
+
+Usernames are 3–20 characters (letters, digits, `_` and `.`, starting with a
+letter or digit), stored lowercase and unique regardless of case, with a few
+reserved names such as `admin`. Contact email and phone are never used to sign
+in or to find an account, so neither is unique.
 
 ### Adding a provider
 
@@ -359,6 +380,7 @@ BadmintonPro/
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
 │   ├── phone_handlers.go    # phone sign-in: send and check codes, limits
+│   ├── profile_handlers.go  # profile step, contact-phone verification
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── store.go             # Store interface, hashing, IDs
@@ -373,8 +395,9 @@ BadmintonPro/
     ├── app/
     │   ├── page.tsx           # redirects to /login
     │   ├── login/page.tsx     # login page: phone and Google
-    │   ├── login/PhoneLogin.tsx # phone number + code steps
+    │   ├── setup-profile/page.tsx # "Set up your profile" after the first sign-in
     │   └── dashboard/page.tsx # signed-in landing page
+    ├── components/auth/PhoneCodeForm.tsx # number + code steps, for sign-in and profile
     ├── lib/api.ts             # typed API client
     └── next.config.ts         # proxies /api/* to the backend
 ```
@@ -392,8 +415,11 @@ Deliberate shortcuts, not oversights:
   so whoever gets a recycled number can sign in to the previous owner's
   account, and SIM-swap scams can hijack one. Don't let phone login alone
   unlock anything sensitive.
-- **Phone accounts start with the name "Player"**; there's no screen to set a
-  name yet.
+- **A phone account's contact email is unverified.** Don't send it anything
+  important until email verification exists; people mistype emails, or type
+  someone else's.
+- **Profiles can't be edited after setup yet**: `/setup-profile` redirects to
+  the dashboard once the profile is complete.
 - **Rate-limit counters live in process memory**, which is correct for one
   backend instance. Several instances would need them in Postgres.
 - **Apple will need `SameSite=None; Secure` on the OAuth flow cookie**, and so

@@ -87,7 +87,7 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		s := newStore(t)
 		a := resolve(t, s, oauth.Identity{Provider: "facebook", Subject: "fb-1"})
 		b := resolve(t, s, oauth.Identity{Provider: "facebook", Subject: "fb-2"})
-		if a.ID == b.ID || a.Name != "Player" {
+		if a.ID == b.ID || a.Name != "" {
 			t.Errorf("a = %+v, b = %+v", a, b)
 		}
 	})
@@ -102,6 +102,101 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		if first.ID == googleUser.ID || first.Email != "" {
 			t.Errorf("phone login must create a separate email-less account, got %+v", first)
+		}
+	})
+
+	t.Run("a new account records how it signs in and needs a profile", func(t *testing.T) {
+		s := newStore(t)
+		p := resolve(t, s, phone("+919876543210"))
+		if p.SignInMethod != phoneIdentityProvider || p.Phone != "+919876543210" || !p.PhoneVerified || p.ProfileComplete {
+			t.Errorf("phone account = %+v", p)
+		}
+		g := resolve(t, s, google("g-6", "g@gmail.com", true))
+		if g.SignInMethod != "google" || g.Phone != "" || g.ProfileComplete {
+			t.Errorf("google account = %+v", g)
+		}
+		// The same account comes back with the same fields.
+		if again := resolve(t, s, phone("+919876543210")); again != p {
+			t.Errorf("reloaded = %+v, want %+v", again, p)
+		}
+	})
+
+	t.Run("profile: saving name and username completes it", func(t *testing.T) {
+		s := newStore(t)
+		u := resolve(t, s, phone("+919876543210"))
+		email := "asha@example.com"
+		got, err := s.UpdateProfile(ctx, u.ID, ProfileUpdate{Name: "Asha", Username: "asha", Email: &email})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Name != "Asha" || got.Username != "asha" || got.Email != email || got.EmailVerified || !got.ProfileComplete {
+			t.Errorf("after update = %+v", got)
+		}
+		token, _ := s.CreateSession(ctx, u.ID)
+		if reloaded, _ := s.UserForToken(ctx, token); reloaded != got {
+			t.Errorf("reloaded = %+v, want %+v", reloaded, got)
+		}
+	})
+
+	t.Run("profile: usernames are unique regardless of case", func(t *testing.T) {
+		s := newStore(t)
+		a := resolve(t, s, phone("+919876543210"))
+		b := resolve(t, s, google("g-7", "b@gmail.com", true))
+		if _, err := s.UpdateProfile(ctx, a.ID, ProfileUpdate{Name: "A", Username: "shuttle"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UpdateProfile(ctx, b.ID, ProfileUpdate{Name: "B", Username: "Shuttle"}); !errors.Is(err, ErrUsernameTaken) {
+			t.Errorf("taken username: err = %v, want ErrUsernameTaken", err)
+		}
+		// Saving your own username again, or changing it, is fine.
+		if _, err := s.UpdateProfile(ctx, a.ID, ProfileUpdate{Name: "A2", Username: "shuttle"}); err != nil {
+			t.Errorf("re-saving own username: %v", err)
+		}
+		if _, err := s.UpdateProfile(ctx, a.ID, ProfileUpdate{Name: "A", Username: "smash"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UpdateProfile(ctx, b.ID, ProfileUpdate{Name: "B", Username: "shuttle"}); err != nil {
+			t.Errorf("a freed username should be available: %v", err)
+		}
+	})
+
+	t.Run("profile: email left out is unchanged, empty clears it", func(t *testing.T) {
+		s := newStore(t)
+		u := resolve(t, s, phone("+919876543210"))
+		email := "x@example.com"
+		if _, err := s.UpdateProfile(ctx, u.ID, ProfileUpdate{Name: "X", Username: "xx1", Email: &email}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.UpdateProfile(ctx, u.ID, ProfileUpdate{Name: "X", Username: "xx1"})
+		if err != nil || got.Email != email {
+			t.Errorf("email without an update = %+v, %v; want it kept", got, err)
+		}
+		empty := ""
+		if got, err := s.UpdateProfile(ctx, u.ID, ProfileUpdate{Name: "X", Username: "xx1", Email: &empty}); err != nil || got.Email != "" {
+			t.Errorf("cleared email = %+v, %v", got, err)
+		}
+	})
+
+	t.Run("profile: unknown account", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.UpdateProfile(ctx, "usr_nobody", ProfileUpdate{Name: "N", Username: "nobody"}); !errors.Is(err, ErrNoSuchUser) {
+			t.Errorf("err = %v, want ErrNoSuchUser", err)
+		}
+		if _, err := s.SetVerifiedPhone(ctx, "usr_nobody", "+919876543210"); !errors.Is(err, ErrNoSuchUser) {
+			t.Errorf("err = %v, want ErrNoSuchUser", err)
+		}
+	})
+
+	t.Run("a verified contact phone is not a way to sign in", func(t *testing.T) {
+		s := newStore(t)
+		g := resolve(t, s, google("g-8", "c@gmail.com", true))
+		got, err := s.SetVerifiedPhone(ctx, g.ID, "+919876543210")
+		if err != nil || got.Phone != "+919876543210" || !got.PhoneVerified {
+			t.Fatalf("SetVerifiedPhone = %+v, %v", got, err)
+		}
+		// Signing in with that number is still a separate account.
+		if p := resolve(t, s, phone("+919876543210")); p.ID == g.ID {
+			t.Error("a contact phone became a sign-in for the Google account")
 		}
 	})
 

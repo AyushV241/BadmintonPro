@@ -10,6 +10,8 @@ export interface ButtonProps extends BaseProps {
   /** Default `md`. */
   size?: Size;
   type?: "button" | "submit" | "reset";
+  /** id of the form this button submits, when it sits outside that form. */
+  form?: string;
   disabled?: boolean;
   /** Shows a spinner and disables the button. */
   loading?: boolean;

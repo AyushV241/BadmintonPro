@@ -12,7 +12,14 @@ export default function DashboardPage() {
     // The session cookie is httpOnly, so the only way to know whether we are
     // signed in is to ask the server.
     me()
-      .then(setUser)
+      .then((u) => {
+        // The profile step comes first.
+        if (!u.profileComplete) {
+          router.replace("/setup-profile");
+          return;
+        }
+        setUser(u);
+      })
       .catch(() => router.replace("/login"));
   }, [router]);
 
@@ -38,16 +45,9 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">
             Welcome, {user.name}
           </h1>
-          {user.email && (
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              {user.email}
-              {user.emailVerified && (
-                <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
-                  verified
-                </span>
-              )}
-            </p>
-          )}
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">@{user.username}</p>
+          {user.email && <ContactLine value={user.email} verified={user.emailVerified} />}
+          {user.phone && <ContactLine value={user.phone} verified={user.phoneVerified} />}
 
           <p className="mt-6 text-sm text-slate-600 dark:text-slate-300">
             You are signed in. Players, matches and rankings will live here.
@@ -62,5 +62,22 @@ export default function DashboardPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function ContactLine({ value, verified }: { value: string; verified: boolean }) {
+  return (
+    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+      {value}
+      <span
+        className={
+          verified
+            ? "ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400"
+            : "ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+        }
+      >
+        {verified ? "verified" : "unverified"}
+      </span>
+    </p>
   );
 }

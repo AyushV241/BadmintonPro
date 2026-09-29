@@ -60,8 +60,12 @@ silently public.
 Phone sign-in works with `OTP_PROVIDER=console` locally and `twilio` for real
 SMS. Still to do:
 
-- **Name on first sign-in.** Phone accounts start as "Player". After the first
-  phone login, ask for a name (needs a `PATCH /api/me` and a store method).
+- **Verify a phone account's contact email.** It's stored unverified today.
+  Send a code or link by email (Twilio Verify's email channel needs SendGrid;
+  or an email adapter such as Resend or Postmark behind the same
+  `otp.Provider` interface), then set `emailVerified`.
+- **Edit the profile after setup.** A settings page reusing the setup form;
+  today `/setup-profile` only works until the profile is complete.
 - **Test numbers for staging.** An allowlist of numbers with fixed codes, so
   demos don't send real SMS. It's a login bypass, so the backend must refuse
   to start with it configured when `COOKIE_SECURE=true`.

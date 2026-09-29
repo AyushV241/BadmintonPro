@@ -17,6 +17,7 @@ export function Button({
   variant = "primary",
   size = "md",
   type = "button",
+  form,
   disabled,
   loading,
   fullWidth,
@@ -35,6 +36,7 @@ export function Button({
       {...VARIANT_MAP[variant]}
       size={toMuiSize(size)}
       type={href ? undefined : type}
+      form={form}
       disabled={disabled}
       loading={loading}
       fullWidth={fullWidth}
