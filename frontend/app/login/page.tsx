@@ -8,7 +8,8 @@ import {
   useSyncExternalStore,
   type FormEvent,
 } from "react";
-import { ApiError, login, loginProviders, providerLoginUrl } from "@/lib/api";
+import { ApiError, login, loginOptions, providerLoginUrl } from "@/lib/api";
+import { PhoneLogin } from "./PhoneLogin";
 
 // Messages for the ?error= codes the backend's OAuth callback redirects with.
 const callbackErrors: Record<string, string> = {
@@ -41,6 +42,16 @@ function useCallbackError(): string | null {
   return code ? (callbackErrors[code] ?? callbackErrors.failed) : null;
 }
 
+function OrDivider() {
+  return (
+    <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
+      <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+      or
+      <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+    </div>
+  );
+}
+
 const inputClass =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-900 focus:ring-1 focus:ring-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-400 dark:focus:ring-slate-400";
 
@@ -52,11 +63,16 @@ export default function LoginPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [providers, setProviders] = useState<string[]>([]);
+  const [phoneEnabled, setPhoneEnabled] = useState(false);
 
   useEffect(() => {
     let active = true;
-    loginProviders()
-      .then((names) => active && setProviders(names))
+    loginOptions()
+      .then((options) => {
+        if (!active) return;
+        setProviders(options.providers);
+        setPhoneEnabled(options.phone);
+      })
       .catch(() => {
         // Password login still works without the provider list.
       });
@@ -105,6 +121,13 @@ export default function LoginPage() {
             </p>
           )}
 
+          {phoneEnabled && (
+            <>
+              <PhoneLogin onSignedIn={() => router.push("/dashboard")} />
+              <OrDivider />
+            </>
+          )}
+
           {providers.length > 0 && (
             <>
               <div className="space-y-2">
@@ -119,11 +142,7 @@ export default function LoginPage() {
                 ))}
               </div>
 
-              <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
-                <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                or
-                <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-              </div>
+              <OrDivider />
             </>
           )}
 

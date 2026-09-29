@@ -186,6 +186,29 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("phone identity logs back into its own account", func(t *testing.T) {
+		s := newStore(t)
+		existing, err := s.CreateUser(ctx, NewUser{Name: "E", Email: "e@example.com", Password: "pw-123456"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		phone := oauth.Identity{Provider: phoneIdentityProvider, Subject: "+919876543210"}
+		first, err := s.ResolveExternalLogin(ctx, phone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := s.ResolveExternalLogin(ctx, phone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.ID != again.ID {
+			t.Errorf("second login = %s, want the account from the first (%s)", again.ID, first.ID)
+		}
+		if first.ID == existing.ID || first.Email != "" {
+			t.Errorf("phone login must create a separate email-less account, got %+v", first)
+		}
+	})
+
 	t.Run("same subject at different providers are different identities", func(t *testing.T) {
 		s := newStore(t)
 		a, _ := s.ResolveExternalLogin(ctx, oauth.Identity{Provider: "google", Subject: "123"})

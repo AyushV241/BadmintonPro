@@ -99,6 +99,63 @@ credentials. Without them, password login works as before.
 On startup the backend logs `external login providers: [google]`. Google
 shows the client secret only once, so keep a copy in a password manager.
 
+### Phone sign-in (optional)
+
+Players type a mobile number and the 6-digit code texted to it; the account
+is created on the first login. Codes are sent through an adapter chosen by
+`OTP_PROVIDER` (`backend/internal/otp`), so the vendor can change without
+touching handlers.
+
+**Locally, no SMS or account needed.** Put this in `backend/.env`:
+
+```bash
+OTP_PROVIDER=console
+```
+
+The backend prints each code in its log instead of sending it:
+
+```
+phone login code for +919876543210: 482913 (console provider: not sent)
+```
+
+`console` refuses to start when `COOKIE_SECURE=true`, so it can't reach a
+real deployment by accident.
+
+**Real SMS with Twilio Verify:**
+
+1. Create a [Twilio](https://www.twilio.com) account. The trial includes 40
+   free Verify checks for 30 days, sending only to up to 5 numbers you've
+   verified, in your sign-up country.
+2. **Verify → Services → Create new**, and copy its Service SID (`VA…`).
+3. **Verify → Settings → Geo permissions**: allow only the countries in
+   `PHONE_REGIONS`, so SMS fraud is also stopped at Twilio's end. Leave
+   Fraud Guard on (the default).
+4. In `backend/.env` (gitignored):
+
+   ```bash
+   OTP_PROVIDER=twilio
+   TWILIO_ACCOUNT_SID=AC…
+   TWILIO_AUTH_TOKEN=…
+   TWILIO_VERIFY_SERVICE_SID=VA…
+   ```
+
+On startup the backend logs `phone login: enabled via twilio for [IN]`.
+
+**Limits.** Every SMS costs money, and SMS pumping fraud triggers thousands,
+so sends are capped:
+
+- per number: one every 30 seconds and 5 an hour;
+- overall: `OTP_SENDS_PER_HOUR` (default 100), which bounds the worst-case
+  bill however many numbers or IPs an attacker uses;
+- per IP: 10 an hour, **only when `CLIENT_IP_HEADER` is set**. The Next.js
+  proxy forwards the browser's own `X-Forwarded-For` unchanged and adds
+  nothing, so the backend can't tell users apart by IP on its own. Set it to
+  a header your production load balancer writes.
+
+Checking codes is limited per number and per IP as well, on top of Twilio's
+own limit of 5 checks per code. Limited requests get `429` with
+`Retry-After`, and the login page counts down before offering to resend.
+
 ## Database credentials
 
 **The credentials in `docker-compose.yml` are not secrets and are committed on
@@ -188,7 +245,9 @@ responses are JSON except the OAuth redirects.
 | `POST` | `/api/login` | — | Email + password; sets the session cookie |
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
 | `GET` | `/api/me` | cookie | The signed-in user |
-| `GET` | `/api/auth/providers` | — | Enabled external providers, e.g. `{"providers":["google"]}` |
+| `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
+| `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` when limited. Only when `OTP_PROVIDER` is set |
+| `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/dashboard` |
 
@@ -302,6 +361,14 @@ ones, and variables already set in the shell win over both:
 | `GOOGLE_CLIENT_ID` | Enables Google sign-in when set | — |
 | `GOOGLE_CLIENT_SECRET` | Required with the client ID | — |
 | `GOOGLE_REDIRECT_URL` | Must match the URI registered with Google | `http://localhost:3000/api/auth/google/callback` |
+| `OTP_PROVIDER` | Enables phone sign-in: `console` (codes printed to the log; local only) or `twilio` | — (disabled) |
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID (or an API key SID) | — |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token (or the API key secret) | — |
+| `TWILIO_VERIFY_SERVICE_SID` | The Verify Service that sends codes (`VA…`) | — |
+| `PHONE_REGIONS` | Comma-separated ISO country codes allowed to sign in by phone | `IN` |
+| `PHONE_DEFAULT_REGION` | Country assumed for numbers typed without a country code | first of `PHONE_REGIONS` |
+| `OTP_SENDS_PER_HOUR` | Cap on codes sent per hour across all numbers | `100` |
+| `CLIENT_IP_HEADER` | Header, set by trusted infrastructure, carrying the client IP. Enables per-IP limits | — (off) |
 | `DEMO_EMAIL` | Seeded account's email | `player@badmintonpro.local` |
 | `DEMO_PASSWORD` | Seeded account's password | `smash123` |
 
@@ -342,6 +409,9 @@ BadmintonPro/
 │   ├── api.go               # routes, signup, password login, /api/me
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
+│   ├── phone_handlers.go    # phone sign-in: send and check codes, limits
+│   ├── phone.go             # phone number normalisation to E.164
+│   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── link.go              # account-linking rules
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)
@@ -349,11 +419,13 @@ BadmintonPro/
 │   ├── migrate.go           # embedded migration runner
 │   ├── migrations/
 │   ├── internal/oauth/      # Provider interface, registry, Google adapter
+│   ├── internal/otp/        # OTP Provider interface; Twilio and in-memory adapters
 │   └── *_test.go
 └── frontend/
     ├── app/
     │   ├── page.tsx           # redirects to /login
-    │   ├── login/page.tsx     # login form
+    │   ├── login/page.tsx     # login page: phone, Google, email/password
+    │   ├── login/PhoneLogin.tsx # phone number + code steps
     │   ├── signup/page.tsx    # signup form
     │   └── dashboard/page.tsx # signed-in landing page
     ├── lib/api.ts             # typed API client
@@ -370,7 +442,16 @@ Deliberate shortcuts, not oversights:
   Google" settings yet.** The store already enforces the rules those
   flows depend on. Verification emails will need an email service; locally
   the plan is to log the link.
-- **No rate limiting** on the login or signup endpoints.
+- **No rate limiting** on the password login or signup endpoints. Phone
+  sign-in has its own limits (see *Phone sign-in*).
+- **Phone accounts are only as safe as the SIM.** Carriers reassign numbers,
+  so whoever gets a recycled number can sign in to the previous owner's
+  account, and SIM-swap scams can hijack one. Don't let phone login alone
+  unlock anything sensitive.
+- **Phone accounts start with the name "Player"**; there's no screen to set a
+  name yet.
+- **Rate-limit counters live in process memory**, which is correct for one
+  backend instance. Several instances would need them in Postgres.
 - **Apple will need `SameSite=None; Secure` on the OAuth flow cookie**, and so
   HTTPS. Its callback is a cross-site POST, which `Lax` cookies aren't sent on.
   Google is unaffected.

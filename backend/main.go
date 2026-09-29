@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
+	"github.com/AyushV241/BadmintonPro/backend/internal/otp"
 )
 
 const (
@@ -66,12 +70,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cookieSecure := os.Getenv("COOKIE_SECURE") == "true"
+	phone, err := configurePhoneLogin(cookieSecure)
+	if err != nil {
+		return err
+	}
 
 	go pruneSessions(ctx, store)
 
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           NewAPI(store, providers, os.Getenv("COOKIE_SECURE") == "true").Routes(),
+		Handler:           NewAPI(store, providers, phone, cookieSecure).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -111,12 +120,72 @@ func configureProviders() (*oauth.Registry, error) {
 		registry.Register(google)
 	}
 
+	// Phone identities are stored under this provider name; an OAuth provider
+	// using it could mint them.
+	if _, clash := registry.Get(phoneIdentityProvider); clash {
+		return nil, fmt.Errorf("no OAuth provider may be named %q", phoneIdentityProvider)
+	}
+
 	if names := registry.Names(); len(names) > 0 {
 		log.Printf("external login providers: %v", names)
 	} else {
 		log.Print("no external login providers configured (set GOOGLE_CLIENT_ID to enable Google)")
 	}
 	return registry, nil
+}
+
+// configurePhoneLogin enables phone login when OTP_PROVIDER is set, and
+// returns nil (disabled) when it isn't.
+func configurePhoneLogin(cookieSecure bool) (*PhoneLogin, error) {
+	provider, err := newOTPProvider(os.Getenv("OTP_PROVIDER"), cookieSecure)
+	if err != nil || provider == nil {
+		return nil, err
+	}
+
+	regions := strings.Split(envOr("PHONE_REGIONS", "IN"), ",")
+	policy, err := newPhonePolicy(envOr("PHONE_DEFAULT_REGION", strings.TrimSpace(regions[0])), regions)
+	if err != nil {
+		return nil, err
+	}
+
+	sendsPerHour, err := strconv.Atoi(envOr("OTP_SENDS_PER_HOUR", "100"))
+	if err != nil || sendsPerHour < 1 {
+		return nil, fmt.Errorf("OTP_SENDS_PER_HOUR must be a positive number, got %q", os.Getenv("OTP_SENDS_PER_HOUR"))
+	}
+
+	ipHeader := os.Getenv("CLIENT_IP_HEADER")
+	if ipHeader == "" {
+		log.Print("phone login: CLIENT_IP_HEADER not set, so per-IP limits are off (per-number and global limits still apply)")
+	}
+	log.Printf("phone login: enabled via %s for %v, at most %d codes an hour", provider.Name(), regions, sendsPerHour)
+	return NewPhoneLogin(provider, policy, ipHeader, sendsPerHour), nil
+}
+
+// newOTPProvider is the one place that knows which vendor sends codes.
+// Switching vendor means adding an adapter in internal/otp and a case here.
+func newOTPProvider(name string, cookieSecure bool) (otp.Provider, error) {
+	switch name {
+	case "":
+		log.Print("phone login disabled (set OTP_PROVIDER to console or twilio)")
+		return nil, nil
+	case "twilio":
+		return otp.NewTwilio(
+			os.Getenv("TWILIO_ACCOUNT_SID"),
+			os.Getenv("TWILIO_AUTH_TOKEN"),
+			os.Getenv("TWILIO_VERIFY_SERVICE_SID"),
+		)
+	case "console":
+		// Prints codes to the log instead of sending them. Anywhere served
+		// over HTTPS is a real deployment, where that would be a mistake.
+		if cookieSecure {
+			return nil, errors.New("OTP_PROVIDER=console is for local development and can't be used with COOKIE_SECURE=true")
+		}
+		return otp.NewMemory("console", func(phone, code string) {
+			log.Printf("phone login code for %s: %s (console provider: not sent)", phone, code)
+		}), nil
+	default:
+		return nil, fmt.Errorf("unknown OTP_PROVIDER %q (want console or twilio)", name)
+	}
 }
 
 // seedDemoUser creates a password login for local development. It is

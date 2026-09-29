@@ -14,6 +14,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** Seconds to wait before retrying, from a 429's Retry-After header. */
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "ApiError";
@@ -46,7 +48,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         : res.status >= 500
           ? "The server is unavailable. Is the backend running?"
           : `Request failed (${res.status})`;
-    throw new ApiError(message, res.status);
+    const retryAfter = Number(res.headers.get("Retry-After")) || undefined;
+    throw new ApiError(message, res.status, retryAfter);
   }
 
   return body as T;
@@ -82,12 +85,47 @@ export function logout(): Promise<void> {
   return request<void>("/api/logout", { method: "POST" });
 }
 
+export type LoginOptions = {
+  /** Redirect logins, each shown as a "Continue with …" button. */
+  providers: string[];
+  /** Whether sign-in with a code sent to a mobile number is enabled. */
+  phone: boolean;
+};
+
+/** Which sign-in methods the backend has enabled. */
+export async function loginOptions(): Promise<LoginOptions> {
+  return request<LoginOptions>("/api/auth/providers");
+}
+
 /** Names of the external login providers the backend has enabled. */
 export async function loginProviders(): Promise<string[]> {
-  const { providers } = await request<{ providers: string[] }>(
-    "/api/auth/providers",
-  );
+  const { providers } = await loginOptions();
   return providers;
+}
+
+/**
+ * Sends a one-time code to a mobile number. Resolves to the number the code
+ * went to, in international format (+919876543210), which verifyPhoneLogin
+ * needs.
+ */
+export async function startPhoneLogin(phone: string): Promise<string> {
+  const res = await request<{ phone: string }>("/api/auth/phone/start", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
+  return res.phone;
+}
+
+/** Checks a code and signs in, creating the account on first login. */
+export async function verifyPhoneLogin(
+  phone: string,
+  code: string,
+): Promise<User> {
+  const { user } = await request<{ user: User }>("/api/auth/phone/verify", {
+    method: "POST",
+    body: JSON.stringify({ phone, code }),
+  });
+  return user;
 }
 
 /**

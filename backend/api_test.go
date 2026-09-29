@@ -22,7 +22,7 @@ func newTestAPI(t *testing.T, providers ...oauth.Provider) (http.Handler, *Memor
 	if _, err := store.CreateUser(context.Background(), NewUser{ID: "usr_1", Name: "Demo Player", Email: demoEmail, Password: demoPassword}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	return NewAPI(store, oauth.NewRegistry(providers...), false).Routes(), store
+	return NewAPI(store, oauth.NewRegistry(providers...), nil, false).Routes(), store
 }
 
 // decodeJSON fails the test if the body isn't valid JSON for v, so a broken

@@ -15,13 +15,16 @@ import (
 type API struct {
 	store     Store
 	providers *oauth.Registry
+	// phone is nil when phone login is disabled.
+	phone *PhoneLogin
 	// cookieSecure marks cookies Secure. It must be true anywhere served over
 	// HTTPS; it is false locally because http://localhost has no TLS.
 	cookieSecure bool
 }
 
-func NewAPI(store Store, providers *oauth.Registry, cookieSecure bool) *API {
-	return &API{store: store, providers: providers, cookieSecure: cookieSecure}
+// NewAPI builds the HTTP API. phone may be nil to disable phone login.
+func NewAPI(store Store, providers *oauth.Registry, phone *PhoneLogin, cookieSecure bool) *API {
+	return &API{store: store, providers: providers, phone: phone, cookieSecure: cookieSecure}
 }
 
 func (a *API) Routes() http.Handler {
@@ -40,6 +43,13 @@ func (a *API) Routes() http.Handler {
 	// Apple posts its callback as a form, so the callback accepts both.
 	mux.HandleFunc("GET /api/auth/{provider}/callback", a.handleOAuthCallback)
 	mux.HandleFunc("POST /api/auth/{provider}/callback", a.handleOAuthCallback)
+
+	// Phone login is a code typed into the page, not a redirect, so it has its
+	// own routes rather than being an OAuth provider.
+	if a.phone != nil {
+		mux.HandleFunc("POST /api/auth/phone/start", a.handlePhoneStart)
+		mux.HandleFunc("POST /api/auth/phone/verify", a.handlePhoneVerify)
+	}
 	return mux
 }
 
@@ -65,6 +75,11 @@ const (
 
 type userResponse struct {
 	User User `json:"user"`
+}
+
+type providersResponse struct {
+	Providers []string `json:"providers"`
+	Phone     bool     `json:"phone"`
 }
 
 type errorResponse struct {
@@ -203,7 +218,9 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string][]string{"providers": a.providers.Names()})
+	// providers lists redirect logins ("Continue with …" buttons); phone is
+	// separate because it isn't one.
+	writeJSON(w, http.StatusOK, providersResponse{Providers: a.providers.Names(), Phone: a.phone != nil})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
