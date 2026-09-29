@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -23,7 +22,6 @@ const (
 const (
 	loginErrCancelled = "cancelled" // user backed out on the provider's screen
 	loginErrExpired   = "expired"   // missing, stale or mismatched state
-	loginErrConflict  = "conflict"  // email clash the provider can't vouch for
 	loginErrFailed    = "failed"    // anything else
 )
 
@@ -93,10 +91,6 @@ func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	ident.Provider = provider.Name()
 
 	user, err := a.store.ResolveExternalLogin(r.Context(), ident)
-	if errors.Is(err, ErrAccountConflict) {
-		redirectToLogin(w, r, loginErrConflict)
-		return
-	}
 	if err != nil {
 		log.Printf("oauth %s: resolve login: %v", provider.Name(), err)
 		redirectToLogin(w, r, loginErrFailed)

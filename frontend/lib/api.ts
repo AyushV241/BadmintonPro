@@ -55,27 +55,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-export async function login(email: string, password: string): Promise<User> {
-  const { user } = await request<{ user: User }>("/api/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-  return user;
-}
-
-/** Creates a password account and signs it in. 409 means the email is taken. */
-export async function signup(
-  name: string,
-  email: string,
-  password: string,
-): Promise<User> {
-  const { user } = await request<{ user: User }>("/api/signup", {
-    method: "POST",
-    body: JSON.stringify({ name, email, password }),
-  });
-  return user;
-}
-
 export async function me(): Promise<User> {
   const { user } = await request<{ user: User }>("/api/me");
   return user;
@@ -95,12 +74,6 @@ export type LoginOptions = {
 /** Which sign-in methods the backend has enabled. */
 export async function loginOptions(): Promise<LoginOptions> {
   return request<LoginOptions>("/api/auth/providers");
-}
-
-/** Names of the external login providers the backend has enabled. */
-export async function loginProviders(): Promise<string[]> {
-  const { providers } = await loginOptions();
-  return providers;
 }
 
 /**

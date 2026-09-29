@@ -47,9 +47,6 @@ func newPhoneTestAPI(t *testing.T, opts phoneTestOptions) (http.Handler, *Memory
 		opts.sendsPerHour = 1000
 	}
 	store := NewMemoryStore()
-	if _, err := store.CreateUser(t.Context(), NewUser{ID: "usr_1", Name: "Demo Player", Email: demoEmail, Password: demoPassword}); err != nil {
-		t.Fatal(err)
-	}
 	inbox := &smsInbox{codes: make(map[string]string)}
 	phone := NewPhoneLogin(otp.NewMemory("test", inbox.deliver), mustPhonePolicy(t, "IN", "IN"), opts.clientIPHeader, opts.sendsPerHour)
 	return NewAPI(store, oauth.NewRegistry(), phone, false).Routes(), store, inbox
@@ -100,7 +97,7 @@ func TestPhoneLoginCreatesAnAccountPerNumber(t *testing.T) {
 	h, _, inbox := newPhoneTestAPI(t, phoneTestOptions{})
 
 	first := phoneLogin(t, h, inbox, "+91 98765 43210")
-	if first.ID == "" || first.ID == "usr_1" {
+	if first.ID == "" {
 		t.Fatalf("expected a new account, got %+v", first)
 	}
 	// A phone proves nothing about email, so the account has none.

@@ -28,7 +28,7 @@ func TestPostgresStoreContract(t *testing.T) {
 
 	runStoreContract(t, func(t *testing.T) Store {
 		if _, err := store.pool.Exec(context.Background(),
-			`TRUNCATE users, sessions, user_identities, password_credentials CASCADE`,
+			`TRUNCATE users, sessions, user_identities CASCADE`,
 		); err != nil {
 			t.Fatalf("truncate: %v", err)
 		}

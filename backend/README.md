@@ -26,11 +26,12 @@ docker compose up -d
 
 Skip this if you use the shared hosted database.
 
-**2. Configure (optional).** With nothing set, the server uses the local Docker
-database and has password login only. To change that:
+**2. Configure.** With nothing set, the server uses the local Docker database
+and has no sign-in method enabled. For local development, enable phone sign-in
+with codes printed to the log:
 
 ```bash
-cp .env.example .env    # then fill in what you need
+cp .env.example .env    # sets OTP_PROVIDER=console; fill in the rest as needed
 ```
 
 At startup the server loads `backend/.env`, then the repo-root `.env`. Earlier
@@ -69,17 +70,21 @@ does the same as `air`, and `mise run dev` also starts the frontend.
 A healthy start logs:
 
 ```
-loaded environment from ../.env
-demo login: player@badmintonpro.local (already seeded)
+loaded environment from .env
 external login providers: [google]
+phone login: enabled via console for [IN], at most 100 codes an hour
 BadmintonPro API listening on :8080
 ```
 
 `no external login providers configured` means Google credentials weren't
-found. Password login still works.
+found; `phone login disabled` means `OTP_PROVIDER` isn't set.
 
-**5. Sign in** through the frontend at http://localhost:3000 with the demo
-account `player@badmintonpro.local / smash123`.
+**5. Sign in** through the frontend at http://localhost:3000 with any mobile
+number. With `OTP_PROVIDER=console` the code is printed in this terminal:
+
+```
+phone login code for +919876543210: 482913 (console provider: not sent)
+```
 
 ## Environment variables
 
@@ -92,7 +97,9 @@ All optional.
 | `COOKIE_SECURE` | `false`. Set `true` anywhere served over HTTPS |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | unset, so Google sign-in is off |
 | `GOOGLE_REDIRECT_URL` | `http://localhost:3000/api/auth/google/callback` |
-| `DEMO_EMAIL`, `DEMO_PASSWORD` | `player@badmintonpro.local`, `smash123` |
+| `OTP_PROVIDER` | unset, so phone sign-in is off. `console` locally, `twilio` for real SMS |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | unset; needed for `OTP_PROVIDER=twilio` |
+| `PHONE_REGIONS`, `OTP_SENDS_PER_HOUR`, `CLIENT_IP_HEADER` | `IN`, `100`, unset |
 
 Full descriptions are in [Configuration](../README.md#configuration).
 

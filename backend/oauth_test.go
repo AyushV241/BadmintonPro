@@ -215,15 +215,21 @@ func TestOAuthCallbackExchangeFailure(t *testing.T) {
 	assertRedirect(t, rec, "/login?error="+loginErrFailed)
 }
 
-func TestOAuthCallbackAccountConflict(t *testing.T) {
+func TestOAuthNeverJoinsAccountsByEmail(t *testing.T) {
+	// A phone account lists an email; a Google login with that same verified
+	// email must get its own account, not the phone account.
 	fake := newFakeProvider("fake")
-	// The demo account exists; this provider does not vouch for the email.
-	fake.identities["code"] = oauth.Identity{Subject: "s", Email: demoEmail, EmailVerified: false}
-	h, _ := newTestAPI(t, fake)
+	fake.identities["code"] = oauth.Identity{Subject: "s", Email: "shared@gmail.com", EmailVerified: true}
+	h, store := newTestAPI(t, fake)
+	_, phoneUser := signIn(t, store, "+919876543210")
 
 	flow, state := startFlow(t, h, "fake")
 	rec := callback(h, "fake", flow, url.Values{"state": {state}, "code": {"code"}})
-	assertRedirect(t, rec, "/login?error="+loginErrConflict)
+	var resp userResponse
+	decodeJSON(t, getMe(h, findCookie(rec, sessionCookieName)).Body.Bytes(), &resp)
+	if resp.User.ID == "" || resp.User.ID == phoneUser.ID {
+		t.Fatalf("Google login got %+v; want a new account separate from %s", resp.User, phoneUser.ID)
+	}
 }
 
 func TestOAuthIgnoresProviderClaimedByAdapter(t *testing.T) {

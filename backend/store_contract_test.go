@@ -10,48 +10,28 @@ import (
 
 // runStoreContract checks behaviour every Store must share. It runs against
 // MemoryStore always and PostgresStore when a test database is available, so
-// the linking rules are verified in the real SQL, not just the in-memory copy.
+// the rules are verified in the real SQL, not just the in-memory copy.
 func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 	ctx := context.Background()
 
 	google := func(subject, email string, verified bool) oauth.Identity {
 		return oauth.Identity{Provider: "google", Subject: subject, Email: email, EmailVerified: verified, Name: "Test User"}
 	}
-
-	t.Run("password login", func(t *testing.T) {
-		s := newStore(t)
-		created, err := s.CreateUser(ctx, NewUser{Name: "Pat", Email: " Pat@Example.com ", Password: "pw-123456"})
+	phone := func(e164 string) oauth.Identity {
+		return oauth.Identity{Provider: phoneIdentityProvider, Subject: e164}
+	}
+	resolve := func(t *testing.T, s Store, ident oauth.Identity) User {
+		t.Helper()
+		u, err := s.ResolveExternalLogin(ctx, ident)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("ResolveExternalLogin(%s/%s): %v", ident.Provider, ident.Subject, err)
 		}
-		if created.Email != "pat@example.com" {
-			t.Errorf("email stored as %q, want normalised", created.Email)
-		}
-		u, err := s.VerifyPassword(ctx, "PAT@example.com", "pw-123456")
-		if err != nil || u.ID != created.ID {
-			t.Fatalf("VerifyPassword = %+v, %v", u, err)
-		}
-		if _, err := s.VerifyPassword(ctx, "pat@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
-			t.Errorf("wrong password: err = %v", err)
-		}
-		if _, err := s.VerifyPassword(ctx, "nobody@example.com", "pw-123456"); !errors.Is(err, ErrInvalidCredentials) {
-			t.Errorf("unknown email: err = %v", err)
-		}
-	})
-
-	t.Run("duplicate email is refused", func(t *testing.T) {
-		s := newStore(t)
-		if _, err := s.CreateUser(ctx, NewUser{Name: "A", Email: "dup@example.com", Password: "pw-123456"}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.CreateUser(ctx, NewUser{Name: "B", Email: "DUP@example.com", Password: "pw-654321"}); !errors.Is(err, ErrEmailTaken) {
-			t.Errorf("err = %v, want ErrEmailTaken", err)
-		}
-	})
+		return u
+	}
 
 	t.Run("sessions", func(t *testing.T) {
 		s := newStore(t)
-		u, _ := s.CreateUser(ctx, NewUser{Name: "S", Email: "s@example.com", Password: "pw-123456"})
+		u := resolve(t, s, phone("+919876543210"))
 		token, err := s.CreateSession(ctx, u.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -67,154 +47,79 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
-	t.Run("create: new identity makes a verified account without a password", func(t *testing.T) {
+	t.Run("create: a new Google identity keeps its verified email", func(t *testing.T) {
 		s := newStore(t)
-		u, err := s.ResolveExternalLogin(ctx, google("g-1", "New@Gmail.com", true))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if u.Email != "new@gmail.com" || !u.EmailVerified {
-			t.Errorf("user = %+v, want verified normalised email", u)
-		}
-		// No password exists, and password login must fail like any other.
-		if _, err := s.VerifyPassword(ctx, "new@gmail.com", ""); !errors.Is(err, ErrInvalidCredentials) {
-			t.Errorf("password login on Google-only account: err = %v", err)
+		u := resolve(t, s, google("g-1", "New@Gmail.com", true))
+		if u.Email != "new@gmail.com" || !u.EmailVerified || u.Name != "Test User" {
+			t.Errorf("user = %+v, want name and verified normalised email", u)
 		}
 	})
 
-	t.Run("login: returning identity gets the same account", func(t *testing.T) {
+	t.Run("login: a returning identity gets the same account", func(t *testing.T) {
 		s := newStore(t)
-		first, _ := s.ResolveExternalLogin(ctx, google("g-2", "back@gmail.com", true))
-		again, err := s.ResolveExternalLogin(ctx, google("g-2", "back@gmail.com", true))
-		if err != nil || again.ID != first.ID {
-			t.Fatalf("second login = %+v, %v; want user %s", again, err, first.ID)
+		first := resolve(t, s, google("g-2", "back@gmail.com", true))
+		if again := resolve(t, s, google("g-2", "back@gmail.com", true)); again.ID != first.ID {
+			t.Fatalf("second login = %s, want %s", again.ID, first.ID)
 		}
 	})
 
-	t.Run("password signup cannot claim a Google account's email", func(t *testing.T) {
+	t.Run("accounts are never joined by email", func(t *testing.T) {
 		s := newStore(t)
-		if _, err := s.ResolveExternalLogin(ctx, google("g-3", "owned@gmail.com", true)); err != nil {
-			t.Fatalf("seed Google account: %v", err)
-		}
-		if _, err := s.CreateUser(ctx, NewUser{Name: "X", Email: "owned@gmail.com", Password: "attacker-pw"}); !errors.Is(err, ErrEmailTaken) {
-			t.Errorf("err = %v, want ErrEmailTaken", err)
+		// Two identities vouching for the same address are still two people
+		// as far as sign-in is concerned. (On Postgres this also needs the
+		// email column to be non-unique.)
+		a := resolve(t, s, google("g-3", "same@gmail.com", true))
+		b := resolve(t, s, oauth.Identity{Provider: "other", Subject: "o-3", Email: "same@gmail.com", EmailVerified: true})
+		if a.ID == b.ID {
+			t.Error("a shared email joined two identities into one account")
 		}
 	})
 
-	t.Run("attach: verified password account keeps its password", func(t *testing.T) {
+	t.Run("an email the provider doesn't vouch for is not stored", func(t *testing.T) {
 		s := newStore(t)
-		owner, _ := s.CreateUser(ctx, NewUser{Name: "V", Email: "v@gmail.com", Password: "pw-123456", EmailVerified: true})
-		token, _ := s.CreateSession(ctx, owner.ID)
-
-		u, err := s.ResolveExternalLogin(ctx, google("g-4", "v@gmail.com", true))
-		if err != nil || u.ID != owner.ID {
-			t.Fatalf("resolve = %+v, %v; want existing user %s", u, err, owner.ID)
-		}
-		if _, err := s.VerifyPassword(ctx, "v@gmail.com", "pw-123456"); err != nil {
-			t.Errorf("password should still work after attach: %v", err)
-		}
-		if _, err := s.UserForToken(ctx, token); err != nil {
-			t.Errorf("existing session should survive attach: %v", err)
-		}
-	})
-
-	t.Run("takeover: unverified password account loses password and sessions", func(t *testing.T) {
-		s := newStore(t)
-		// Someone registered this address without proving they own it.
-		squatter, _ := s.CreateUser(ctx, NewUser{Name: "Squatter", Email: "victim@gmail.com", Password: "squatter-pw"})
-		squatterSession, _ := s.CreateSession(ctx, squatter.ID)
-
-		u, err := s.ResolveExternalLogin(ctx, google("g-5", "victim@gmail.com", true))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if u.ID != squatter.ID || !u.EmailVerified {
-			t.Errorf("user = %+v, want same account now verified", u)
-		}
-		if _, err := s.VerifyPassword(ctx, "victim@gmail.com", "squatter-pw"); !errors.Is(err, ErrInvalidCredentials) {
-			t.Errorf("unproven password must be removed; err = %v", err)
-		}
-		if _, err := s.UserForToken(ctx, squatterSession); !errors.Is(err, ErrInvalidToken) {
-			t.Errorf("existing sessions must be revoked; err = %v", err)
-		}
-		// The Google login itself keeps working.
-		if again, err := s.ResolveExternalLogin(ctx, google("g-5", "victim@gmail.com", true)); err != nil || again.ID != u.ID {
-			t.Errorf("follow-up login = %+v, %v", again, err)
-		}
-	})
-
-	t.Run("refuse: provider will not vouch for a clashing email", func(t *testing.T) {
-		s := newStore(t)
-		if _, err := s.CreateUser(ctx, NewUser{Name: "E", Email: "clash@example.com", Password: "pw-123456", EmailVerified: true}); err != nil {
-			t.Fatalf("seed verified account: %v", err)
-		}
-		if _, err := s.ResolveExternalLogin(ctx, google("g-6", "clash@example.com", false)); !errors.Is(err, ErrAccountConflict) {
-			t.Errorf("err = %v, want ErrAccountConflict", err)
-		}
-		// Nothing was linked, so the refusal repeats rather than logging in.
-		if _, err := s.ResolveExternalLogin(ctx, google("g-6", "clash@example.com", false)); !errors.Is(err, ErrAccountConflict) {
-			t.Errorf("second attempt: err = %v, want ErrAccountConflict", err)
-		}
-	})
-
-	t.Run("unvouched email is not stored and does not claim the address", func(t *testing.T) {
-		s := newStore(t)
-		u, err := s.ResolveExternalLogin(ctx, google("g-7", "maybe@example.com", false))
-		if err != nil {
-			t.Fatal(err)
-		}
+		u := resolve(t, s, google("g-4", "maybe@example.com", false))
 		if u.Email != "" || u.EmailVerified {
 			t.Errorf("user = %+v, want no email recorded", u)
 		}
-		if _, err := s.CreateUser(ctx, NewUser{Name: "Real", Email: "maybe@example.com", Password: "pw-123456"}); err != nil {
-			t.Errorf("address should still be free: %v", err)
-		}
 	})
 
-	t.Run("identity without an email (e.g. Facebook)", func(t *testing.T) {
+	t.Run("identities without an email are separate accounts", func(t *testing.T) {
 		s := newStore(t)
-		a, err := s.ResolveExternalLogin(ctx, oauth.Identity{Provider: "facebook", Subject: "fb-1"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := s.ResolveExternalLogin(ctx, oauth.Identity{Provider: "facebook", Subject: "fb-2"})
-		if err != nil {
-			t.Fatalf("second email-less account: %v", err)
-		}
+		a := resolve(t, s, oauth.Identity{Provider: "facebook", Subject: "fb-1"})
+		b := resolve(t, s, oauth.Identity{Provider: "facebook", Subject: "fb-2"})
 		if a.ID == b.ID || a.Name != "Player" {
 			t.Errorf("a = %+v, b = %+v", a, b)
 		}
 	})
 
-	t.Run("phone identity logs back into its own account", func(t *testing.T) {
+	t.Run("a phone identity logs back into its own account", func(t *testing.T) {
 		s := newStore(t)
-		existing, err := s.CreateUser(ctx, NewUser{Name: "E", Email: "e@example.com", Password: "pw-123456"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		phone := oauth.Identity{Provider: phoneIdentityProvider, Subject: "+919876543210"}
-		first, err := s.ResolveExternalLogin(ctx, phone)
-		if err != nil {
-			t.Fatal(err)
-		}
-		again, err := s.ResolveExternalLogin(ctx, phone)
-		if err != nil {
-			t.Fatal(err)
-		}
+		googleUser := resolve(t, s, google("g-5", "p@gmail.com", true))
+		first := resolve(t, s, phone("+919876543210"))
+		again := resolve(t, s, phone("+919876543210"))
 		if first.ID != again.ID {
 			t.Errorf("second login = %s, want the account from the first (%s)", again.ID, first.ID)
 		}
-		if first.ID == existing.ID || first.Email != "" {
+		if first.ID == googleUser.ID || first.Email != "" {
 			t.Errorf("phone login must create a separate email-less account, got %+v", first)
 		}
 	})
 
 	t.Run("same subject at different providers are different identities", func(t *testing.T) {
 		s := newStore(t)
-		a, _ := s.ResolveExternalLogin(ctx, oauth.Identity{Provider: "google", Subject: "123"})
-		b, _ := s.ResolveExternalLogin(ctx, oauth.Identity{Provider: "facebook", Subject: "123"})
+		a := resolve(t, s, oauth.Identity{Provider: "google", Subject: "123"})
+		b := resolve(t, s, oauth.Identity{Provider: "facebook", Subject: "123"})
 		if a.ID == b.ID {
 			t.Error("provider must be part of the identity key")
+		}
+	})
+
+	t.Run("an identity must name a provider and subject", func(t *testing.T) {
+		s := newStore(t)
+		for _, ident := range []oauth.Identity{{Provider: "google"}, {Subject: "x"}} {
+			if _, err := s.ResolveExternalLogin(ctx, ident); err == nil {
+				t.Errorf("ResolveExternalLogin(%+v) succeeded, want an error", ident)
+			}
 		}
 	})
 }

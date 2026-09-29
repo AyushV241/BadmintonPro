@@ -40,8 +40,9 @@ Restart `npm run dev` after changing it.
 npm run dev
 ```
 
-Open http://localhost:3000 and sign in with the demo account
-`player@badmintonpro.local / smash123`. Edits hot reload in the browser.
+Open http://localhost:3000 and sign in with any mobile number. With the
+backend's `OTP_PROVIDER=console`, the code appears in the backend's terminal
+instead of by SMS. Edits hot reload in the browser.
 
 From the repo root, `mise run web` does the same, and `mise run dev` starts it
 together with the backend.
@@ -60,5 +61,7 @@ npm run start    # serve the production build (after build)
   backend isn't running, or isn't on `BACKEND_URL`.
 - **No "Continue with Google" button.** The backend has no Google credentials;
   see [Google sign-in](../README.md#google-sign-in-optional).
+- **No phone number field.** The backend has no `OTP_PROVIDER`; see
+  [Phone sign-in](../README.md#phone-sign-in-optional).
 - **Google redirects to an error page.** Use `http://localhost:3000`, not
   `127.0.0.1`. The redirect URI registered with Google must match exactly.

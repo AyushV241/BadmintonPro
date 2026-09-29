@@ -62,10 +62,6 @@ func run() error {
 	}
 	defer store.Close()
 
-	if err := seedDemoUser(ctx, store); err != nil {
-		return err
-	}
-
 	providers, err := configureProviders()
 	if err != nil {
 		return err
@@ -186,25 +182,6 @@ func newOTPProvider(name string, cookieSecure bool) (otp.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown OTP_PROVIDER %q (want console or twilio)", name)
 	}
-}
-
-// seedDemoUser creates a password login for local development. It is
-// idempotent, so restarting against an existing database is not an error.
-func seedDemoUser(ctx context.Context, store Store) error {
-	email := envOr("DEMO_EMAIL", "player@badmintonpro.local")
-	password := envOr("DEMO_PASSWORD", "smash123")
-
-	_, err := store.CreateUser(ctx, NewUser{ID: "usr_1", Name: "Demo Player", Email: email, Password: password})
-	switch {
-	case errors.Is(err, ErrEmailTaken):
-		log.Printf("demo login: %s (already seeded)", email)
-		return nil
-	case err != nil:
-		return err
-	}
-
-	log.Printf("demo login: %s / %s", email, password)
-	return nil
 }
 
 // pruneSessions periodically clears expired sessions so the table does not

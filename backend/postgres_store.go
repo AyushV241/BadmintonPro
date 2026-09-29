@@ -8,13 +8,8 @@ import (
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 )
-
-// uniqueViolation is the SQLSTATE code Postgres returns for a duplicate key.
-const uniqueViolation = "23505"
 
 // PostgresStore is the durable implementation of Store.
 type PostgresStore struct {
@@ -49,81 +44,10 @@ func loadUser(ctx context.Context, q querier, id string) (User, error) {
 	return u, err
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
-}
-
-func (s *PostgresStore) CreateUser(ctx context.Context, nu NewUser) (User, error) {
-	hash, err := hashPassword(nu.Password)
-	if err != nil {
-		return User{}, err
-	}
-	id := nu.ID
-	if id == "" {
-		if id, err = newUserID(); err != nil {
-			return User{}, err
-		}
-	}
-	user := User{ID: id, Name: nu.Name, Email: normaliseEmail(nu.Email), EmailVerified: nu.EmailVerified}
-
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO users (id, name, email, email_verified) VALUES ($1, $2, $3, $4)`,
-			user.ID, user.Name, user.Email, user.EmailVerified,
-		); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO password_credentials (user_id, password_hash) VALUES ($1, $2)`,
-			user.ID, hash,
-		)
-		return err
-	})
-	if isUniqueViolation(err) {
-		return User{}, ErrEmailTaken
-	}
-	if err != nil {
-		return User{}, err
-	}
-	return user, nil
-}
-
-func (s *PostgresStore) VerifyPassword(ctx context.Context, email, password string) (User, error) {
-	var (
-		user User
-		hash []byte // NULL when the account has no password
-	)
-	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.name, COALESCE(u.email, ''), u.email_verified, pc.password_hash
-		FROM users u
-		LEFT JOIN password_credentials pc ON pc.user_id = u.id
-		WHERE lower(u.email) = $1`,
-		normaliseEmail(email),
-	).Scan(&user.ID, &user.Name, &user.Email, &user.EmailVerified, &hash)
-
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		hash = nil
-	case err != nil:
-		return User{}, fmt.Errorf("look up user: %w", err)
-	}
-
-	if hash == nil {
-		equaliseTiming(password)
-		return User{}, ErrInvalidCredentials
-	}
-	if err := bcrypt.CompareHashAndPassword(hash, []byte(password)); err != nil {
-		return User{}, ErrInvalidCredentials
-	}
-	return user, nil
-}
-
 func (s *PostgresStore) ResolveExternalLogin(ctx context.Context, ident oauth.Identity) (User, error) {
 	if ident.Provider == "" || ident.Subject == "" {
 		return User{}, errors.New("identity is missing provider or subject")
 	}
-	email := normaliseEmail(ident.Email)
 
 	var user User
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -132,85 +56,30 @@ func (s *PostgresStore) ResolveExternalLogin(ctx context.Context, ident oauth.Id
 			`SELECT user_id FROM user_identities WHERE provider = $1 AND subject = $2`,
 			ident.Provider, ident.Subject,
 		).Scan(&linkedID)
-		linked := err == nil
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		switch {
+		case err == nil:
+			user, err = loadUser(ctx, tx, linkedID)
+			return err
+		case !errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("look up identity: %w", err)
 		}
 
-		var owner *emailOwner
-		if !linked && email != "" {
-			// FOR UPDATE stops a concurrent password change or login from
-			// racing the takeover below.
-			var o emailOwner
-			err := tx.QueryRow(ctx,
-				`SELECT id, email_verified FROM users WHERE lower(email) = $1 FOR UPDATE`,
-				email,
-			).Scan(&o.userID, &o.emailVerified)
-			switch {
-			case err == nil:
-				owner = &o
-			case !errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("look up email owner: %w", err)
-			}
-		}
-
-		linkIdentity := func(userID string) error {
-			_, err := tx.Exec(ctx,
-				`INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, NULLIF($4, ''))`,
-				ident.Provider, ident.Subject, userID, email,
-			)
+		id, err := newUserID()
+		if err != nil {
 			return err
 		}
-
-		switch decideLink(linked, owner, ident.EmailVerified) {
-		case linkLogin:
-			user, err = loadUser(ctx, tx, linkedID)
+		user = newAccount(id, ident)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO users (id, name, email, email_verified) VALUES ($1, $2, NULLIF($3, ''), $4)`,
+			user.ID, user.Name, user.Email, user.EmailVerified,
+		); err != nil {
 			return err
-
-		case linkCreate:
-			id, err := newUserID()
-			if err != nil {
-				return err
-			}
-			user = User{ID: id, Name: displayName(ident)}
-			// Only an email the provider vouches for may claim the address.
-			if ident.EmailVerified && email != "" {
-				user.Email, user.EmailVerified = email, true
-			}
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO users (id, name, email, email_verified) VALUES ($1, $2, NULLIF($3, ''), $4)`,
-				user.ID, user.Name, user.Email, user.EmailVerified,
-			); err != nil {
-				return err
-			}
-			return linkIdentity(user.ID)
-
-		case linkAttach:
-			if err := linkIdentity(owner.userID); err != nil {
-				return err
-			}
-			user, err = loadUser(ctx, tx, owner.userID)
-			return err
-
-		case linkTakeover:
-			for _, stmt := range []string{
-				`DELETE FROM password_credentials WHERE user_id = $1`,
-				`DELETE FROM sessions WHERE user_id = $1`,
-				`UPDATE users SET email_verified = true WHERE id = $1`,
-			} {
-				if _, err := tx.Exec(ctx, stmt, owner.userID); err != nil {
-					return err
-				}
-			}
-			if err := linkIdentity(owner.userID); err != nil {
-				return err
-			}
-			user, err = loadUser(ctx, tx, owner.userID)
-			return err
-
-		default: // linkRefuse
-			return ErrAccountConflict
 		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+			ident.Provider, ident.Subject, user.ID, user.Email,
+		)
+		return err
 	})
 	if err != nil {
 		return User{}, err

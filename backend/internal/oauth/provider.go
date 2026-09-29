@@ -25,7 +25,8 @@ type Identity struct {
 	Subject string
 	Email   string
 	// EmailVerified is true only when the provider vouches that the user
-	// controls Email. Account linking depends on it.
+	// controls Email. Only a vouched-for email is stored, and then only as
+	// contact information: accounts are never found or joined by email.
 	EmailVerified bool
 	Name          string
 }

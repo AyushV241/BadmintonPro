@@ -2,9 +2,9 @@
 
 A badminton club and match management app — Next.js frontend, Go backend, Postgres.
 
-> **Status:** early scaffold. Sign-up and sign-in work end to end, with email +
-> password or Google, against a real database. Players, matches and rankings are not
-> built yet.
+> **Status:** early scaffold. Sign-in works end to end with a phone code or
+> Google, against a real database. Players, matches and rankings are not built
+> yet.
 
 ## Stack
 
@@ -46,8 +46,7 @@ air        # hot reload: rebuilds and restarts on save
 the backend and frontend together.
 
 On a fresh local database, apply the schema once with `go run . -migrate`
-(see [Migrations](#migrations)). Starting the server never migrates; it only
-seeds a demo user.
+(see [Migrations](#migrations)). Starting the server never migrates.
 
 **3. Frontend (port 3000):**
 
@@ -57,21 +56,14 @@ npm install     # first time only
 npm run dev
 ```
 
-Open http://localhost:3000.
-
-### Demo account
-
-```
-player@badmintonpro.local / smash123
-```
-
-Override with `DEMO_EMAIL` / `DEMO_PASSWORD`. Seeding is idempotent, so
-restarting against an existing database is fine.
+Open http://localhost:3000 and sign in with any mobile number: with
+`OTP_PROVIDER=console` (see *Phone sign-in*) the code appears in the backend's
+log, so no SMS or account is needed.
 
 ### Google sign-in (optional)
 
 The "Continue with Google" button appears only when the backend has Google
-credentials. Without them, password login works as before.
+credentials. Without them, phone sign-in still works.
 
 1. In [Google Cloud Console](https://console.cloud.google.com), using a
    **personal** Google account rather than a work one, create a project. No
@@ -165,7 +157,7 @@ teammate clones the repo, runs `docker compose up -d`, and has the same
 database. The port is bound to `127.0.0.1`, so the container is not reachable
 from the network.
 
-The local Docker database's *data* isn't shared: each developer's container starts empty and is populated by migrations plus the seeded demo user. For shared data, use the hosted database below. Shared fixtures still belong in a migration or a seed command committed to the repo, not in a database dump someone passes around.
+The local Docker database's *data* isn't shared: each developer's container starts empty and is populated by migrations and whoever signs in. For shared data, use the hosted database below. Shared fixtures still belong in a migration or a seed command committed to the repo, not in a database dump someone passes around.
 
 Real environments never use these values. They set `DATABASE_URL`, which should
 come from the deployment platform's secret store and never be committed.
@@ -209,7 +201,6 @@ Leave `DATABASE_URL` unset to keep using the local Docker database.
 DATABASE_URL=postgres://badminton:badminton@localhost:5432/badmintonpro?sslmode=disable go run . -migrate
 ```
 
-The seeded demo account exists on the shared database too, so everyone using it shares `player@badmintonpro.local / smash123`.
 
 ## Migrations
 
@@ -241,8 +232,6 @@ responses are JSON except the OAuth redirects.
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | Liveness check |
-| `POST` | `/api/signup` | — | Name + email + password; creates an unverified account and sets the session cookie. `409` if the email is taken |
-| `POST` | `/api/login` | — | Email + password; sets the session cookie |
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
 | `GET` | `/api/me` | cookie | The signed-in user |
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
@@ -252,75 +241,37 @@ responses are JSON except the OAuth redirects.
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/dashboard` |
 
 ```bash
-curl -c cookies.txt -X POST http://localhost:3000/api/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"player@badmintonpro.local","password":"smash123"}'
+curl -X POST http://localhost:3000/api/auth/phone/start \
+  -H 'Content-Type: application/json' -d '{"phone":"98765 43210"}'
+# the code is in the backend log with OTP_PROVIDER=console
+curl -c cookies.txt -X POST http://localhost:3000/api/auth/phone/verify \
+  -H 'Content-Type: application/json' -d '{"phone":"+919876543210","code":"482913"}'
 
 curl -b cookies.txt http://localhost:3000/api/me
-```
-
-```json
-{ "user": { "id": "usr_1", "name": "Demo Player", "email": "player@badmintonpro.local", "emailVerified": false } }
 ```
 
 The session is an httpOnly, `SameSite=Lax` cookie named `bp_session`. It never
 appears in a response body, and page scripts can't read it.
 
-Failed password logins return `401` with the same message whether the email is
-unknown, the password is wrong, or the account has no password (Google-only),
-so the endpoint can't be used to discover which accounts exist.
-
-Signup can't hide that yet: its `409` tells anyone whether an email is
-registered. Closing that needs email verification (always answer "check your
-inbox" and notify an existing owner by email instead). Until then it's a known
-tradeoff, and rate limiting is the first mitigation to add.
-
-Signup validates in the handler: a name of 1–100 characters, a bare email
-address, and a password of 8 characters to 72 bytes (bcrypt ignores anything
-longer). The email is stored lowercased and **unverified**.
-
 When a provider sign-in fails, the callback redirects to `/login?error=<code>`
-with one of `cancelled`, `expired` (bad or missing `state`), `conflict` or
-`failed`. The details go to the backend log, never the URL.
+with one of `cancelled`, `expired` (bad or missing `state`) or `failed`. The details go to the backend log, never the URL.
 
 ## Accounts and sign-in methods
 
-A user (`users`) is separate from the ways they sign in: a password
-(`password_credentials`) and any number of external identities
-(`user_identities`). External identities are keyed on the provider's stable
-subject ID, **never on email**. Emails change, Apple hands out relay
-addresses, and Facebook may not return one at all.
+A user (`users`) is separate from the way they sign in (`user_identities`):
+a phone number, or a provider's stable subject ID, **never an email**. Emails
+change, Apple hands out relay addresses, and Facebook may not return one at
+all.
 
-### Linking rules
+**Each sign-in method is its own account.** The first sign-in with a phone
+number or a Google account creates an account; later sign-ins with the same
+one return to it. Nothing is ever joined by email or phone number, so signing
+in with a phone and later with Google gives two separate accounts, even for
+the same person. That rules out a whole class of account-hijacking bugs, at
+the cost of possible duplicates.
 
-When someone signs in with a provider, `decideLink` in `backend/link.go`
-decides what happens:
-
-| Identity already linked? | Account with that email | Provider vouches for email? | Result |
-| --- | --- | --- | --- |
-| yes | (any) | (any) | Sign in |
-| no | none | (any) | Create an account |
-| no | verified | yes | Attach to it; its password keeps working |
-| no | unverified | yes | **Take over**: attach, delete its password, end all its sessions |
-| no | any | no | Refuse (`conflict`) |
-
-Password signup with an email any account already uses is refused, so nobody
-can attach a password to someone else's Google account.
-
-Because nothing verifies emails yet, every password signup is unverified. So a
-user who signs up with a password and later chooses "Continue with Google" for
-the same email hits the takeover row: they get in with Google, but their
-password is deleted. Once email verification exists, verified users will keep
-their password instead (the attach row).
-
-The takeover row prevents *pre-account hijacking*. Anyone can register a
-password account with an email they don't own. If the real owner then signs
-in through a provider that proves ownership, keeping the old password would
-leave them in an account a stranger can also get into. So the provider wins.
-An honest user loses only a password they can set again.
-
-An email a provider doesn't vouch for is never stored on the user, so it can't
-claim the address.
+A provider's email is stored only if the provider vouches for it
+(`EmailVerified`), and then only as contact information.
 
 ### Adding a provider
 
@@ -337,11 +288,11 @@ type Provider interface {
 
 To add Facebook or Apple, write the adapter, register it in
 `configureProviders` in `main.go`, and add its label in
-`frontend/app/login/page.tsx`. Routes, storage and linking rules don't change,
-and the button appears once `/api/auth/providers` lists it. The adapter must
-verify the provider's response itself (Google's checks the ID token's
-signature, issuer, audience, expiry and nonce) and report `EmailVerified`
-honestly. That flag decides the linking row.
+`frontend/app/login/page.tsx`. Routes and storage don't change, and the
+button appears once `/api/auth/providers` lists it. The adapter must verify
+the provider's response itself (Google's checks the ID token's signature,
+issuer, audience, expiry and nonce) and report `EmailVerified` honestly, since
+it decides whether the email is kept.
 
 Every login uses PKCE, a `state` value checked against a short-lived httpOnly
 cookie scoped to `/api/auth/`, and a nonce. Nothing from the provider is stored
@@ -369,8 +320,6 @@ ones, and variables already set in the shell win over both:
 | `PHONE_DEFAULT_REGION` | Country assumed for numbers typed without a country code | first of `PHONE_REGIONS` |
 | `OTP_SENDS_PER_HOUR` | Cap on codes sent per hour across all numbers | `100` |
 | `CLIENT_IP_HEADER` | Header, set by trusted infrastructure, carrying the client IP. Enables per-IP limits | — (off) |
-| `DEMO_EMAIL` | Seeded account's email | `player@badmintonpro.local` |
-| `DEMO_PASSWORD` | Seeded account's password | `smash123` |
 
 **Frontend** — copy `frontend/.env.example` to `frontend/.env.local`:
 
@@ -385,8 +334,8 @@ cd backend && go test ./...
 ```
 
 By default the tests use the in-memory store and need no database. The store
-contract tests, which include every linking rule, can also run against real
-Postgres. Point them at a **throwaway** database, because they truncate every
+contract tests, which cover how sign-ins map to accounts, can also run against
+real Postgres. Point them at a **throwaway** database, because they truncate every
 table:
 
 ```bash
@@ -406,13 +355,12 @@ BadmintonPro/
 ├── backend/
 │   ├── main.go              # startup, provider setup, graceful shutdown
 │   ├── env.go               # loads backend/.env and ../.env
-│   ├── api.go               # routes, signup, password login, /api/me
+│   ├── api.go               # routes, /api/me, logout
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
 │   ├── phone_handlers.go    # phone sign-in: send and check codes, limits
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── ratelimit.go         # in-memory sliding-window limiter
-│   ├── link.go              # account-linking rules
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)
 │   ├── postgres_store.go    # Postgres implementation
@@ -424,9 +372,8 @@ BadmintonPro/
 └── frontend/
     ├── app/
     │   ├── page.tsx           # redirects to /login
-    │   ├── login/page.tsx     # login page: phone, Google, email/password
+    │   ├── login/page.tsx     # login page: phone and Google
     │   ├── login/PhoneLogin.tsx # phone number + code steps
-    │   ├── signup/page.tsx    # signup form
     │   └── dashboard/page.tsx # signed-in landing page
     ├── lib/api.ts             # typed API client
     └── next.config.ts         # proxies /api/* to the backend
@@ -438,12 +385,9 @@ Deliberate shortcuts, not oversights:
 
 - **Tokens are opaque random strings**, not JWTs — fine, but it means every
   authenticated request hits the database.
-- **No email verification, password reset, "set a password" or "connect
-  Google" settings yet.** The store already enforces the rules those
-  flows depend on. Verification emails will need an email service; locally
-  the plan is to log the link.
-- **No rate limiting** on the password login or signup endpoints. Phone
-  sign-in has its own limits (see *Phone sign-in*).
+- **One person can have two accounts:** signing in once by phone and once
+  with Google gives two unrelated accounts (see *Accounts and sign-in
+  methods*).
 - **Phone accounts are only as safe as the SIM.** Carriers reassign numbers,
   so whoever gets a recycled number can sign in to the previous owner's
   account, and SIM-swap scams can hijack one. Don't let phone login alone

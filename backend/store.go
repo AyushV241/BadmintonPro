@@ -9,21 +9,9 @@ import (
 	"time"
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
-	"golang.org/x/crypto/bcrypt"
 )
 
-var (
-	// ErrInvalidCredentials is deliberately returned for an unknown email, a
-	// wrong password, and an account with no password alike, so the API
-	// cannot be used to enumerate accounts.
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrInvalidToken       = errors.New("invalid or expired token")
-	ErrEmailTaken         = errors.New("email already registered")
-	// ErrAccountConflict means an external login presented the email of an
-	// existing account, but the provider does not vouch for that email, so
-	// linking could hand the account to the wrong person.
-	ErrAccountConflict = errors.New("email belongs to an existing account that cannot be safely linked")
-)
+var ErrInvalidToken = errors.New("invalid or expired token")
 
 const sessionTTL = 24 * time.Hour
 
@@ -35,27 +23,13 @@ type User struct {
 	EmailVerified bool   `json:"emailVerified"`
 }
 
-// NewUser describes a password account to create.
-type NewUser struct {
-	ID            string // generated when empty
-	Name          string
-	Email         string
-	Password      string
-	EmailVerified bool
-}
-
-// Store persists accounts, login methods and sessions. MemoryStore and
+// Store persists accounts, sign-in identities and sessions. MemoryStore and
 // PostgresStore both implement it; handlers depend only on this interface.
 type Store interface {
-	// CreateUser registers a password account. It returns ErrEmailTaken if
-	// any account already uses the email, however that account signs in.
-	CreateUser(ctx context.Context, u NewUser) (User, error)
-
-	// VerifyPassword checks a password login.
-	VerifyPassword(ctx context.Context, email, password string) (User, error)
-
-	// ResolveExternalLogin maps a provider identity to a user, creating or
-	// linking accounts according to decideLink. It is atomic.
+	// ResolveExternalLogin signs in with a phone or provider identity: an
+	// identity seen before gets its account, a new one gets a new account.
+	// Each sign-in method is its own account. Accounts are never found or
+	// joined by email, so an email can't be used to reach someone else's.
 	ResolveExternalLogin(ctx context.Context, ident oauth.Identity) (User, error)
 
 	CreateSession(ctx context.Context, userID string) (string, error)
@@ -79,10 +53,6 @@ func displayName(ident oauth.Identity) string {
 	return "Player"
 }
 
-func hashPassword(password string) ([]byte, error) {
-	return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-}
-
 func randomHex(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -101,12 +71,13 @@ func newUserID() (string, error) {
 	return "usr_" + id, nil
 }
 
-// equaliseTiming spends roughly as long as a real bcrypt comparison would, so
-// response latency does not reveal whether an account exists or has a password.
-func equaliseTiming(password string) {
-	// The result is irrelevant: the caller always fails the login. Only the
-	// time spent matters.
-	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+// newAccount is the account created on an identity's first sign-in. A
+// provider's email is kept only when the provider vouches for it, and even
+// then only as contact information.
+func newAccount(id string, ident oauth.Identity) User {
+	u := User{ID: id, Name: displayName(ident)}
+	if email := normaliseEmail(ident.Email); ident.EmailVerified && email != "" {
+		u.Email, u.EmailVerified = email, true
+	}
+	return u
 }
-
-var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password"), bcrypt.DefaultCost)
