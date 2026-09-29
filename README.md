@@ -11,10 +11,10 @@ A badminton club and match management app — Next.js frontend, Go backend, Post
 | Layer | Choice |
 | --- | --- |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind v4 |
-| Backend | Go 1.26, standard library `net/http`, bcrypt |
-| Database | Postgres 17 via Docker Compose, `pgx` driver |
+| Backend | Go 1.26, standard library `net/http` |
+| Database | Postgres 17 via Docker Compose locally, or a hosted Postgres such as Neon; `pgx` driver |
 | Migrations | golang-migrate, embedded in the binary |
-| Auth | httpOnly session cookie; Google via OpenID Connect (`x/oauth2`, `go-oidc`) |
+| Auth | httpOnly session cookie; phone codes via Twilio Verify (`internal/otp`); Google via OpenID Connect (`x/oauth2`, `go-oidc`) |
 
 ## Prerequisites
 
