@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -144,17 +143,8 @@ func configurePhoneLogin(cookieSecure bool) (*PhoneLogin, error) {
 		return nil, err
 	}
 
-	sendsPerHour, err := strconv.Atoi(envOr("OTP_SENDS_PER_HOUR", "100"))
-	if err != nil || sendsPerHour < 1 {
-		return nil, fmt.Errorf("OTP_SENDS_PER_HOUR must be a positive number, got %q", os.Getenv("OTP_SENDS_PER_HOUR"))
-	}
-
-	ipHeader := os.Getenv("CLIENT_IP_HEADER")
-	if ipHeader == "" {
-		log.Print("phone login: CLIENT_IP_HEADER not set, so per-IP limits are off (per-number and global limits still apply)")
-	}
-	log.Printf("phone login: enabled via %s for %v, at most %d codes an hour", provider.Name(), regions, sendsPerHour)
-	return NewPhoneLogin(provider, policy, ipHeader, sendsPerHour), nil
+	log.Printf("phone login: enabled via %s for %v", provider.Name(), regions)
+	return NewPhoneLogin(provider, policy), nil
 }
 
 // newOTPProvider is the one place that knows which vendor sends codes.

@@ -133,20 +133,13 @@ real deployment by accident.
 
 On startup the backend logs `phone login: enabled via twilio for [IN]`.
 
-**Limits.** Every SMS costs money, and SMS pumping fraud triggers thousands,
-so sends are capped:
-
-- per number: one every 30 seconds and 5 an hour;
-- overall: `OTP_SENDS_PER_HOUR` (default 100), which bounds the worst-case
-  bill however many numbers or IPs an attacker uses;
-- per IP: 10 an hour, **only when `CLIENT_IP_HEADER` is set**. The Next.js
-  proxy forwards the browser's own `X-Forwarded-For` unchanged and adds
-  nothing, so the backend can't tell users apart by IP on its own. Set it to
-  a header your production load balancer writes.
-
-Checking codes is limited per number and per IP as well, on top of Twilio's
-own limit of 5 checks per code. Limited requests get `429` with
-`Retry-After`, and the login page counts down before offering to resend.
+**No rate limiting of our own yet** (see `TODO.md`, "Rate limiting"). Only
+the vendor's limits apply: Twilio Verify allows 5 sends per number per 10
+minutes and 5 checks per code, blocks suspicious traffic with Fraud Guard,
+and only sends to the countries in its geo permissions. A request Twilio
+refuses as too many gets `429` with `Retry-After`. The console provider only
+limits wrong guesses (5 per code). Add our own limits back before relying on
+`OTP_PROVIDER=twilio` anywhere public: every SMS costs money.
 
 ## Database credentials
 
@@ -235,10 +228,10 @@ responses are JSON except the OAuth redirects.
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
 | `GET` | `/api/me` | cookie | The signed-in user, including `username`, contact `email`/`phone` with `emailVerified`/`phoneVerified`, `signInMethod` and `profileComplete` |
 | `PUT` | `/api/me/profile` | cookie | `{"name","username","email"?}`: the profile step. `email` only for accounts without a verified one (stored unverified; `""` clears it). `409` if the username is taken |
-| `POST` | `/api/me/phone/start` | cookie | `{"phone"}`: texts a code to a phone a Google account wants on its profile. Same limits as phone sign-in. `400` for phone accounts |
+| `POST` | `/api/me/phone/start` | cookie | `{"phone"}`: texts a code to a phone a Google account wants on its profile. Same validation as phone sign-in. `400` for phone accounts |
 | `POST` | `/api/me/phone/verify` | cookie | `{"phone","code"}`: saves it as a **verified contact phone**. It does not become a way to sign in |
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
-| `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` when limited. Only when `OTP_PROVIDER` is set |
+| `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` if the OTP provider refuses as too many. Only when `OTP_PROVIDER` is set |
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
@@ -339,8 +332,6 @@ ones, and variables already set in the shell win over both:
 | `TWILIO_VERIFY_SERVICE_SID` | The Verify Service that sends codes (`VA…`) | — |
 | `PHONE_REGIONS` | Comma-separated ISO country codes allowed to sign in by phone | `IN` |
 | `PHONE_DEFAULT_REGION` | Country assumed for numbers typed without a country code | first of `PHONE_REGIONS` |
-| `OTP_SENDS_PER_HOUR` | Cap on codes sent per hour across all numbers | `100` |
-| `CLIENT_IP_HEADER` | Header, set by trusted infrastructure, carrying the client IP. Enables per-IP limits | — (off) |
 
 **Frontend** — copy `frontend/.env.example` to `frontend/.env.local`:
 
@@ -379,10 +370,9 @@ BadmintonPro/
 │   ├── api.go               # routes, /api/me, logout
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
-│   ├── phone_handlers.go    # phone sign-in: send and check codes, limits
+│   ├── phone_handlers.go    # phone sign-in: send and check codes
 │   ├── profile_handlers.go  # profile step, contact-phone verification
 │   ├── phone.go             # phone number normalisation to E.164
-│   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)
 │   ├── postgres_store.go    # Postgres implementation
@@ -420,8 +410,8 @@ Deliberate shortcuts, not oversights:
   someone else's.
 - **Profiles can't be edited after setup yet**: `/setup-profile` redirects to
   the dashboard once the profile is complete.
-- **Rate-limit counters live in process memory**, which is correct for one
-  backend instance. Several instances would need them in Postgres.
+- **No rate limiting of our own on phone codes.** Only the OTP vendor's
+  limits apply (see *Phone sign-in*); ours are planned in `TODO.md`.
 - **Apple will need `SameSite=None; Secure` on the OAuth flow cookie**, and so
   HTTPS. Its callback is a cross-site POST, which `Lax` cookies aren't sent on.
   Google is unaffected.

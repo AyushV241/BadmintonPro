@@ -99,7 +99,7 @@ All optional.
 | `GOOGLE_REDIRECT_URL` | `http://localhost:3000/api/auth/google/callback` |
 | `OTP_PROVIDER` | unset, so phone sign-in is off. `console` locally, `twilio` for real SMS |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | unset; needed for `OTP_PROVIDER=twilio` |
-| `PHONE_REGIONS`, `OTP_SENDS_PER_HOUR`, `CLIENT_IP_HEADER` | `IN`, `100`, unset |
+| `PHONE_REGIONS` | `IN` |
 
 Full descriptions are in [Configuration](../README.md#configuration).
 

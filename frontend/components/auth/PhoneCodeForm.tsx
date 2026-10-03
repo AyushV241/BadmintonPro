@@ -4,7 +4,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Button, Input, OTPInput, Typography } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 
-// Matches the backend's per-number resend cooldown.
+// How long "Resend code" waits after a send. A UI nicety only: the backend
+// has no cooldown of its own yet (see TODO.md, "Rate limiting").
 const RESEND_SECONDS = 30;
 
 function messageFor(err: unknown): string {

@@ -20,48 +20,18 @@ import (
 const phoneIdentityProvider = "phone"
 
 // PhoneLogin enables sign-in with a one-time code sent to a mobile number.
+//
+// There is no rate limiting of our own yet (see TODO.md "Rate limiting"):
+// only the vendor's limits apply, such as Twilio Verify's 5 sends per number
+// per 10 minutes, which surface as ErrTooManyAttempts.
 type PhoneLogin struct {
 	Provider otp.Provider
 	Policy   phonePolicy
-	// ClientIPHeader names a header, set by trusted infrastructure, that
-	// carries the caller's IP. Empty disables the per-IP limits.
-	ClientIPHeader string
-
-	limits phoneLimits
 }
 
-// phoneLimits cap how often codes are sent and checked. Every SMS costs money
-// and SMS pumping fraud triggers thousands, so sends are limited per number,
-// per IP (when known) and overall. The global cap bounds the worst-case bill
-// however many numbers or IPs an attacker uses.
-type phoneLimits struct {
-	sendCooldown  *limiter // per number: one send per 30s
-	sendPerPhone  *limiter // per number: 5 an hour
-	sendPerIP     *limiter // per IP: 10 an hour
-	sendGlobal    *limiter // everyone: sendGlobalPerHour an hour
-	checkPerPhone *limiter // per number: 10 every 10 minutes
-	checkPerIP    *limiter // per IP: 30 an hour
-}
-
-func newPhoneLimits(sendGlobalPerHour int) phoneLimits {
-	return phoneLimits{
-		sendCooldown:  newLimiter(1, 30*time.Second),
-		sendPerPhone:  newLimiter(5, time.Hour),
-		sendPerIP:     newLimiter(10, time.Hour),
-		sendGlobal:    newLimiter(sendGlobalPerHour, time.Hour),
-		checkPerPhone: newLimiter(10, 10*time.Minute),
-		checkPerIP:    newLimiter(30, time.Hour),
-	}
-}
-
-// NewPhoneLogin wires a provider and policy with the default limits.
-func NewPhoneLogin(provider otp.Provider, policy phonePolicy, clientIPHeader string, sendGlobalPerHour int) *PhoneLogin {
-	return &PhoneLogin{
-		Provider:       provider,
-		Policy:         policy,
-		ClientIPHeader: clientIPHeader,
-		limits:         newPhoneLimits(sendGlobalPerHour),
-	}
+// NewPhoneLogin wires a provider and policy.
+func NewPhoneLogin(provider otp.Provider, policy phonePolicy) *PhoneLogin {
+	return &PhoneLogin{Provider: provider, Policy: policy}
 }
 
 type phoneStartRequest struct {
@@ -125,28 +95,14 @@ func (a *API) handlePhoneVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userResponse{User: user})
 }
 
-// sendCode normalises raw, applies the send limits and sends a code. It is
-// shared by phone sign-in and by verifying a contact phone, so both have the
-// same limits. On failure it has already written the response.
+// sendCode normalises raw and sends a code. It is shared by phone sign-in and
+// by verifying a contact phone, so both validate the same way. On failure it
+// has already written the response.
 func (a *API) sendCode(w http.ResponseWriter, r *http.Request, raw string) (string, bool) {
 	pl := a.phone
-	ip := clientIP(r, pl.ClientIPHeader)
-	// Per-IP first, before any parsing work, then the number-specific limits.
-	if ok, wait := allowAll(rule{pl.limits.sendPerIP, ip}); !ok {
-		writeRateLimited(w, wait, "too many codes requested")
-		return "", false
-	}
 	phone, err := pl.Policy.normalize(raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
-		return "", false
-	}
-	if ok, wait := allowAll(
-		rule{pl.limits.sendCooldown, phone},
-		rule{pl.limits.sendPerPhone, phone},
-		rule{pl.limits.sendGlobal, "all"},
-	); !ok {
-		writeRateLimited(w, wait, "too many codes requested")
 		return "", false
 	}
 
@@ -166,22 +122,14 @@ func (a *API) sendCode(w http.ResponseWriter, r *http.Request, raw string) (stri
 	return phone, true
 }
 
-// checkCode normalises raw, applies the check limits and checks code. On
-// failure it has already written the response.
+// checkCode normalises raw and checks code. Each code still allows only a few
+// wrong guesses (the provider enforces that). On failure it has already
+// written the response.
 func (a *API) checkCode(w http.ResponseWriter, r *http.Request, raw, code string) (string, bool) {
 	pl := a.phone
-	ip := clientIP(r, pl.ClientIPHeader)
-	if ok, wait := allowAll(rule{pl.limits.checkPerIP, ip}); !ok {
-		writeRateLimited(w, wait, "too many attempts")
-		return "", false
-	}
 	phone, err := pl.Policy.normalize(raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, phoneErrorMessage(err))
-		return "", false
-	}
-	if ok, wait := allowAll(rule{pl.limits.checkPerPhone, phone}); !ok {
-		writeRateLimited(w, wait, "too many attempts")
 		return "", false
 	}
 	if !sixDigits.MatchString(code) {
@@ -223,7 +171,8 @@ func decodeSmallJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// writeRateLimited sends 429 with Retry-After in whole seconds.
+// writeRateLimited sends 429 with Retry-After in whole seconds. Used when the
+// OTP provider reports too many attempts.
 func writeRateLimited(w http.ResponseWriter, wait time.Duration, message string) {
 	seconds := int(math.Ceil(wait.Seconds()))
 	if seconds < 1 {

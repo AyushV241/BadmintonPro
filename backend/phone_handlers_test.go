@@ -36,19 +36,11 @@ func (in *smsInbox) code(t *testing.T, phone string) string {
 	return code
 }
 
-type phoneTestOptions struct {
-	sendsPerHour   int
-	clientIPHeader string
-}
-
-func newPhoneTestAPI(t *testing.T, opts phoneTestOptions) (http.Handler, *MemoryStore, *smsInbox) {
+func newPhoneTestAPI(t *testing.T) (http.Handler, *MemoryStore, *smsInbox) {
 	t.Helper()
-	if opts.sendsPerHour == 0 {
-		opts.sendsPerHour = 1000
-	}
 	store := NewMemoryStore()
 	inbox := &smsInbox{codes: make(map[string]string)}
-	phone := NewPhoneLogin(otp.NewMemory("test", inbox.deliver), mustPhonePolicy(t, "IN", "IN"), opts.clientIPHeader, opts.sendsPerHour)
+	phone := NewPhoneLogin(otp.NewMemory("test", inbox.deliver), mustPhonePolicy(t, "IN", "IN"))
 	return NewAPI(store, oauth.NewRegistry(), phone, false).Routes(), store, inbox
 }
 
@@ -94,7 +86,7 @@ func phoneLogin(t *testing.T, h http.Handler, inbox *smsInbox, typed string) Use
 }
 
 func TestPhoneLoginCreatesAnAccountPerNumber(t *testing.T) {
-	h, _, inbox := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, inbox := newPhoneTestAPI(t)
 
 	first := phoneLogin(t, h, inbox, "+91 98765 43210")
 	if first.ID == "" {
@@ -112,19 +104,28 @@ func TestPhoneLoginCreatesAnAccountPerNumber(t *testing.T) {
 }
 
 func TestPhoneLoginSameNumberIsSameAccount(t *testing.T) {
-	h, store, inbox := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, inbox := newPhoneTestAPI(t)
 	first := phoneLogin(t, h, inbox, "+919876543210")
+	// The same number typed another way is the same account.
+	if again := phoneLogin(t, h, inbox, "98765 43210"); again.ID != first.ID {
+		t.Fatalf("second login = %s, want account %s", again.ID, first.ID)
+	}
+}
 
-	// Skip the resend cooldown by resolving the identity directly, as a later
-	// login would: it must find the same account.
-	again, err := store.ResolveExternalLogin(t.Context(), oauth.Identity{Provider: phoneIdentityProvider, Subject: "+919876543210"})
-	if err != nil || again.ID != first.ID {
-		t.Fatalf("second login = %+v, %v; want account %s", again, err, first.ID)
+func TestPhoneResendReplacesTheCode(t *testing.T) {
+	h, _, inbox := newPhoneTestAPI(t)
+	for range 2 {
+		if rec := startPhone(h, "+919876543210"); rec.Code != http.StatusOK {
+			t.Fatalf("send: %d", rec.Code)
+		}
+	}
+	if rec := verifyPhone(h, "+919876543210", inbox.code(t, "+919876543210")); rec.Code != http.StatusOK {
+		t.Errorf("the latest code: status %d, want 200", rec.Code)
 	}
 }
 
 func TestPhoneVerifyRejectsWrongCode(t *testing.T) {
-	h, _, inbox := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, inbox := newPhoneTestAPI(t)
 	if rec := startPhone(h, "+919876543210"); rec.Code != http.StatusOK {
 		t.Fatalf("start: %d", rec.Code)
 	}
@@ -144,7 +145,7 @@ func TestPhoneVerifyRejectsWrongCode(t *testing.T) {
 }
 
 func TestPhoneStartValidatesNumber(t *testing.T) {
-	h, _, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, _ := newPhoneTestAPI(t)
 	for name, tc := range map[string]struct {
 		body string
 		want string
@@ -163,61 +164,6 @@ func TestPhoneStartValidatesNumber(t *testing.T) {
 	}
 }
 
-func TestPhoneStartResendCooldown(t *testing.T) {
-	h, _, _ := newPhoneTestAPI(t, phoneTestOptions{})
-	if rec := startPhone(h, "+919876543210"); rec.Code != http.StatusOK {
-		t.Fatalf("first send: %d", rec.Code)
-	}
-	// The same number in another format is still the same number.
-	rec := startPhone(h, "98765 43210")
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("resend within 30s: status %d, want 429", rec.Code)
-	}
-	if rec.Header().Get("Retry-After") == "" {
-		t.Error("429 must carry Retry-After")
-	}
-}
-
-func TestPhoneStartGlobalCap(t *testing.T) {
-	h, _, _ := newPhoneTestAPI(t, phoneTestOptions{sendsPerHour: 2})
-	for i := range 2 {
-		if rec := startPhone(h, fmt.Sprintf("+9198765%05d", i)); rec.Code != http.StatusOK {
-			t.Fatalf("send %d: %d", i+1, rec.Code)
-		}
-	}
-	// A different number: per-number limits don't apply, the global cap does.
-	if rec := startPhone(h, "+919876500099"); rec.Code != http.StatusTooManyRequests {
-		t.Errorf("send beyond the global cap: status %d, want 429", rec.Code)
-	}
-}
-
-func TestPhoneStartPerIPLimitOnlyWithTrustedHeader(t *testing.T) {
-	t.Run("trusted header configured", func(t *testing.T) {
-		h, _, _ := newPhoneTestAPI(t, phoneTestOptions{clientIPHeader: "X-Client-IP"})
-		for i := range 10 {
-			if rec := startPhone(h, fmt.Sprintf("+9198765%05d", i), "X-Client-IP", "203.0.113.7"); rec.Code != http.StatusOK {
-				t.Fatalf("send %d: %d", i+1, rec.Code)
-			}
-		}
-		if rec := startPhone(h, "+919876500099", "X-Client-IP", "203.0.113.7"); rec.Code != http.StatusTooManyRequests {
-			t.Errorf("11th send from one IP: status %d, want 429", rec.Code)
-		}
-		if rec := startPhone(h, "+919876500098", "X-Client-IP", "198.51.100.1"); rec.Code != http.StatusOK {
-			t.Errorf("another IP: status %d, want 200", rec.Code)
-		}
-	})
-	t.Run("no trusted header", func(t *testing.T) {
-		// Behind the Next.js proxy every request comes from the same address,
-		// so a per-IP limit would lock everyone out together. It must be off.
-		h, _, _ := newPhoneTestAPI(t, phoneTestOptions{})
-		for i := range 12 {
-			if rec := startPhone(h, fmt.Sprintf("+9198765%05d", i), "X-Forwarded-For", "203.0.113.7"); rec.Code != http.StatusOK {
-				t.Fatalf("send %d: %d", i+1, rec.Code)
-			}
-		}
-	})
-}
-
 func TestPhoneLoginDisabled(t *testing.T) {
 	h, _ := newTestAPI(t) // no PhoneLogin configured
 	if rec := startPhone(h, "+919876543210"); rec.Code == http.StatusOK {
@@ -231,7 +177,7 @@ func TestPhoneLoginDisabled(t *testing.T) {
 }
 
 func TestProvidersReportsPhoneSeparately(t *testing.T) {
-	h, _, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, _ := newPhoneTestAPI(t)
 	var resp providersResponse
 	decodeJSON(t, serve(h, httptest.NewRequest(http.MethodGet, "/api/auth/providers", nil)).Body.Bytes(), &resp)
 	if !resp.Phone {

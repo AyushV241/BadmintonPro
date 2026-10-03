@@ -45,6 +45,43 @@ silently public.
     route public then means editing the allowlist, which is visible in
     review.
 
+### 3. Rate limiting for phone codes (removed for now)
+
+It was built and then taken out to make local testing easier. Only the OTP
+vendor's limits apply today (Twilio Verify: 5 sends per number per 10
+minutes, Fraud Guard, geo permissions). **Restore it before using
+`OTP_PROVIDER=twilio` anywhere public**: every SMS costs money, and SMS
+pumping fraud sends thousands.
+
+The working version is in git: `backend/ratelimit.go` and
+`ratelimit_test.go`, and the limits in `phone_handlers.go`, as of commit
+`1fa9ccc` (they were first added in `755e31f`). Restoring it is mostly
+`git checkout 1fa9ccc -- backend/ratelimit.go backend/ratelimit_test.go`
+plus re-adding the checks in `sendCode`/`checkCode`, `NewPhoneLogin`'s
+parameters and the config below.
+
+The design:
+
+- an in-memory sliding-window limiter, with `allowAll` checking every rule
+  before recording any, so a request refused by one rule doesn't use up the
+  others;
+- sends:
+  - per number: one every 30 seconds and 5 an hour;
+  - overall: `OTP_SENDS_PER_HOUR` (default 100), which bounds the
+    worst-case bill however many numbers or IPs an attacker uses;
+  - per IP: 10 an hour, **only when `CLIENT_IP_HEADER` is set**;
+- checks: 10 per number every 10 minutes, and 30 per IP an hour;
+- limited requests get `429` with `Retry-After`, and the page counts down
+  (the UI countdown is still in place);
+- **the client-IP finding:** the Next.js rewrite proxy forwards the browser's
+  own `X-Forwarded-For` unchanged and adds nothing. So trusting that header
+  lets anyone fake their IP, and `RemoteAddr` is always the proxy. Per-IP
+  limits need a header written by infrastructure in front of everything (a
+  load balancer), taking its last entry;
+- with several backend instances, move the counters to Postgres.
+
+The same limiter would also serve any future public endpoint.
+
 ### Also suggested (smaller)
 
 - Store session tokens as SHA-256 hashes, so a database leak doesn't expose

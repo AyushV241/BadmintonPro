@@ -41,7 +41,7 @@ func putProfile(h http.Handler, session *http.Cookie, body string) *httptest.Res
 }
 
 func TestProfileSetupCompletesAPhoneAccount(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	session, user := signIn(t, store, "+919876543210")
 	if user.ProfileComplete {
 		t.Fatal("a new account must start with an incomplete profile")
@@ -63,7 +63,7 @@ func TestProfileSetupCompletesAPhoneAccount(t *testing.T) {
 }
 
 func TestProfileEmailIsOptional(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	session, _ := signIn(t, store, "+919876543210")
 	if rec := putProfile(h, session, `{"name":"Asha","username":"asha"}`); rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
@@ -71,7 +71,7 @@ func TestProfileEmailIsOptional(t *testing.T) {
 }
 
 func TestProfileRequiresSignIn(t *testing.T) {
-	h, _, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, _ := newPhoneTestAPI(t)
 	for _, path := range []string{"/api/me/phone/start", "/api/me/phone/verify"} {
 		if rec := sendAuthed(h, http.MethodPost, path, `{"phone":"+919876543210","code":"123456"}`, nil); rec.Code != http.StatusUnauthorized {
 			t.Errorf("POST %s without a session = %d, want 401", path, rec.Code)
@@ -83,7 +83,7 @@ func TestProfileRequiresSignIn(t *testing.T) {
 }
 
 func TestProfileValidation(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	session, _ := signIn(t, store, "+919876543210")
 	for name, body := range map[string]string{
 		"missing name":         `{"name":"  ","username":"asha"}`,
@@ -106,7 +106,7 @@ func TestProfileValidation(t *testing.T) {
 }
 
 func TestProfileUsernameTaken(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	first, _ := signIn(t, store, "+919876543210")
 	second, _ := signIn(t, store, "+919876543211")
 	if rec := putProfile(h, first, `{"name":"A","username":"shuttle"}`); rec.Code != http.StatusOK {
@@ -119,7 +119,7 @@ func TestProfileUsernameTaken(t *testing.T) {
 }
 
 func TestProfileGoogleEmailCantBeReplaced(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	session, _ := signInGoogle(t, store, "g-1", "real@gmail.com")
 	if rec := putProfile(h, session, `{"name":"G","username":"gee","email":"other@example.com"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("replacing a verified email: status %d, want 400", rec.Code)
@@ -134,7 +134,7 @@ func TestProfileGoogleEmailCantBeReplaced(t *testing.T) {
 }
 
 func TestContactPhoneVerificationForGoogleAccount(t *testing.T) {
-	h, store, inbox := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, inbox := newPhoneTestAPI(t)
 	session, googleUser := signInGoogle(t, store, "g-1", "real@gmail.com")
 
 	rec := sendAuthed(h, http.MethodPost, "/api/me/phone/start", `{"phone":"98765 43210"}`, session)
@@ -172,15 +172,14 @@ func TestContactPhoneVerificationForGoogleAccount(t *testing.T) {
 	}
 
 	// It is contact information only: signing in with the number is a
-	// separate account. Resolve directly to skip the resend cooldown.
-	phoneUser, err := store.ResolveExternalLogin(context.Background(), oauth.Identity{Provider: phoneIdentityProvider, Subject: "+919876543210"})
-	if err != nil || phoneUser.ID == googleUser.ID {
-		t.Errorf("phone sign-in = %+v, %v; want a separate account", phoneUser, err)
+	// separate account.
+	if phoneUser := phoneLogin(t, h, inbox, "+919876543210"); phoneUser.ID == googleUser.ID {
+		t.Errorf("phone sign-in = %+v; want a separate account", phoneUser)
 	}
 }
 
 func TestContactPhoneNotForPhoneAccounts(t *testing.T) {
-	h, store, _ := newPhoneTestAPI(t, phoneTestOptions{})
+	h, store, _ := newPhoneTestAPI(t)
 	session, _ := signIn(t, store, "+919876543210")
 	if rec := sendAuthed(h, http.MethodPost, "/api/me/phone/start", `{"phone":"+919876543299"}`, session); rec.Code != http.StatusBadRequest {
 		t.Errorf("phone account changing its number: status %d, want 400", rec.Code)
@@ -207,7 +206,7 @@ func TestOAuthSendsNewUsersToProfileSetupUntilDone(t *testing.T) {
 }
 
 func TestPhoneVerifyReportsProfileStatus(t *testing.T) {
-	h, _, inbox := newPhoneTestAPI(t, phoneTestOptions{})
+	h, _, inbox := newPhoneTestAPI(t)
 	if rec := startPhone(h, "+919876543210"); rec.Code != http.StatusOK {
 		t.Fatal(rec.Code)
 	}
