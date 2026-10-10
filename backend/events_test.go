@@ -97,18 +97,97 @@ func TestListEventsPublishedUpcomingInStartOrder(t *testing.T) {
 	if smash.Venue.Name != "Koramangala Sports Arena" || smash.Venue.Timezone != demoTimezone {
 		t.Errorf("venue = %+v", smash.Venue)
 	}
-	if smash.FeePaise != 35000 || smash.Currency != "INR" || smash.SpotsLeft != smash.Capacity {
+	if smash.FeePaise != 5000 || smash.Currency != "INR" || smash.SpotsLeft != smash.Capacity {
 		t.Errorf("fee/spots = %d %s %d/%d", smash.FeePaise, smash.Currency, smash.SpotsLeft, smash.Capacity)
 	}
-	if smash.RatingMin == nil || *smash.RatingMin != 3.6 || smash.RatingMax == nil || *smash.RatingMax != 4.8 {
+	if smash.MaxMatches != 20 {
+		t.Errorf("maxMatches = %d", smash.MaxMatches)
+	}
+	if smash.RatingMin == nil || *smash.RatingMin != 1300 || smash.RatingMax == nil || *smash.RatingMax != 1700 {
 		t.Errorf("rating band = %v–%v", smash.RatingMin, smash.RatingMax)
+	}
+	if len(smash.Formats) != 1 || smash.Formats[0] != FormatSingles || len(smash.SlotMinutes) != 1 || smash.SlotMinutes[FormatSingles] != 30 {
+		t.Errorf("formats = %v, slots %v", smash.Formats, smash.SlotMinutes)
 	}
 	wantStart := time.Date(2026, 10, 10, 19, 30, 0, 0, mustLoad(demoTimezone))
 	if !smash.StartsAt.Equal(wantStart) || smash.StartsAt.Location() != time.UTC {
 		t.Errorf("startsAt = %v, want %v in UTC", smash.StartsAt, wantStart)
 	}
-	if smash.Courts != nil {
-		t.Errorf("list includes courts: %v", smash.Courts)
+	if !smash.RegistrationClosesAt.Equal(wantStart.Add(-2 * time.Hour)) {
+		t.Errorf("registrationClosesAt = %v", smash.RegistrationClosesAt)
+	}
+	if smash.Courts != nil || smash.DistanceKm != nil {
+		t.Errorf("list includes courts %v / distance %v", smash.Courts, smash.DistanceKm)
+	}
+
+	// Slot lengths are listed only for the formats on offer.
+	ladder := events[2]
+	if len(ladder.SlotMinutes) != 2 || ladder.SlotMinutes[FormatDoubles] != 40 || ladder.SlotMinutes[FormatMixed] != 40 {
+		t.Errorf("ladder slots = %v", ladder.SlotMinutes)
+	}
+}
+
+// Demo venues are about 3.6 km (HSR) and 5.1 km (Indiranagar) from
+// Koramangala.
+func TestListEventsNearAPoint(t *testing.T) {
+	store := seededStore(t, testNow)
+	ctx := context.Background()
+	koramangala := &GeoPoint{Lat: 12.9352, Lng: 77.6245}
+
+	events, _, err := store.ListEvents(ctx, EventQuery{Now: testNow, Near: koramangala, RadiusKm: 2, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIDs(t, events, "evt_demo_saturday_smash")
+	if d := events[0].DistanceKm; d == nil || *d != 0 {
+		t.Errorf("distance at the venue = %v", d)
+	}
+
+	events, _, _ = store.ListEvents(ctx, EventQuery{Now: testNow, Near: koramangala, RadiusKm: 4, Limit: 10})
+	assertIDs(t, events, "evt_demo_saturday_smash", "evt_demo_sunday_ladder")
+	if d := events[1].DistanceKm; d == nil || *d < 3 || *d > 4 {
+		t.Errorf("HSR distance = %v, want about 3.6", d)
+	}
+
+	events, _, _ = store.ListEvents(ctx, EventQuery{Now: testNow, Near: koramangala, RadiusKm: 6, Limit: 10})
+	assertIDs(t, events, "evt_demo_midweek_rally", "evt_demo_saturday_smash", "evt_demo_sunday_ladder")
+
+	// A venue that isn't on the map drops out of location searches only.
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO venues (id, name, city, timezone) VALUES ('ven_t_nomap', 'No Map Club', 'bangalore', 'Asia/Kolkata');
+		INSERT INTO events (id, venue_id, title, formats, starts_at, ends_at, registration_closes_at, fee_paise, capacity, max_matches, status)
+		VALUES ('evt_t_nomap', 'ven_t_nomap', 'Unmapped', '{singles}', '2026-10-09T12:00:00Z', '2026-10-09T14:00:00Z',
+		        '2026-10-09T10:00:00Z', 5000, 8, 4, 'published');`); err != nil {
+		t.Fatal(err)
+	}
+	events, _, _ = store.ListEvents(ctx, EventQuery{Now: testNow, Near: koramangala, RadiusKm: 100, Limit: 10})
+	if len(events) != 3 {
+		t.Errorf("location search = %v, want the 3 mapped events", eventIDs(events))
+	}
+	events, _, _ = store.ListEvents(ctx, EventQuery{Now: testNow, City: "bangalore", Limit: 10})
+	if len(events) != 4 {
+		t.Errorf("city search = %v, want all 4", eventIDs(events))
+	}
+}
+
+func TestEventsTableRejectsBadRows(t *testing.T) {
+	store := seededStore(t, testNow)
+	insert := func(formats, closes string, maxMatches int) error {
+		_, err := store.pool.Exec(context.Background(), `
+			INSERT INTO events (id, venue_id, title, formats, starts_at, ends_at, registration_closes_at, fee_paise, capacity, max_matches)
+			VALUES ('evt_t_bad', 'ven_demo_hsr', 'Bad', $1, '2026-10-09T12:00:00Z', '2026-10-09T14:00:00Z', $2, 5000, 8, $3)`,
+			formats, closes, maxMatches)
+		return err
+	}
+	for name, err := range map[string]error{
+		"unknown format":         insert("{tennis}", "2026-10-09T10:00:00Z", 4),
+		"no formats":             insert("{}", "2026-10-09T10:00:00Z", 4),
+		"closes after the start": insert("{singles}", "2026-10-09T13:00:00Z", 4),
+		"no matches":             insert("{singles}", "2026-10-09T10:00:00Z", 0),
+	} {
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 
@@ -258,6 +337,29 @@ func TestEventsEndpoints(t *testing.T) {
 		t.Errorf("second page = %v, cursor %v", eventIDs(rest.Events), rest.NextCursor)
 	}
 
+	var near struct {
+		Events []Event `json:"events"`
+	}
+	if code := get("/api/events?lat=12.9352&lng=77.6245&radiusKm=4", &near); code != http.StatusOK {
+		t.Fatalf("near: %d", code)
+	}
+	if len(near.Events) != 2 || near.Events[0].DistanceKm == nil {
+		t.Errorf("near = %v", eventIDs(near.Events))
+	}
+	// Without a location, distanceKm isn't in the JSON at all.
+	if res, err := http.Get(srv.URL + "/api/events"); err != nil {
+		t.Fatal(err)
+	} else {
+		var raw struct {
+			Events []map[string]any `json:"events"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&raw)
+		_ = res.Body.Close()
+		if _, ok := raw.Events[0]["distanceKm"]; ok {
+			t.Error("distanceKm present without a location")
+		}
+	}
+
 	var one struct {
 		Event Event `json:"event"`
 	}
@@ -266,12 +368,18 @@ func TestEventsEndpoints(t *testing.T) {
 	}
 
 	for path, want := range map[string]int{
-		"/api/events/evt_demo_draft_open": http.StatusNotFound,
-		"/api/events/evt_nope":            http.StatusNotFound,
-		"/api/events?cursor=bm90LWEtY3Vy": http.StatusBadRequest,
-		"/api/events?limit=0":             http.StatusBadRequest,
-		"/api/events?limit=51":            http.StatusBadRequest,
-		"/api/events?city=new%20york":     http.StatusBadRequest,
+		"/api/events/evt_demo_draft_open":        http.StatusNotFound,
+		"/api/events/evt_nope":                   http.StatusNotFound,
+		"/api/events?cursor=bm90LWEtY3Vy":        http.StatusBadRequest,
+		"/api/events?limit=0":                    http.StatusBadRequest,
+		"/api/events?limit=51":                   http.StatusBadRequest,
+		"/api/events?city=new%20york":            http.StatusBadRequest,
+		"/api/events?lat=12.9":                   http.StatusBadRequest,
+		"/api/events?lat=NaN&lng=77":             http.StatusBadRequest,
+		"/api/events?lat=91&lng=77":              http.StatusBadRequest,
+		"/api/events?radiusKm=5":                 http.StatusBadRequest,
+		"/api/events?lat=12&lng=77&radiusKm=0":   http.StatusBadRequest,
+		"/api/events?lat=12&lng=77&radiusKm=101": http.StatusBadRequest,
 	} {
 		if code := get(path, nil); code != want {
 			t.Errorf("GET %s = %d, want %d", path, code, want)

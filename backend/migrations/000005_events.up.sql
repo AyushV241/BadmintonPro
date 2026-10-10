@@ -30,17 +30,27 @@ CREATE TABLE events (
     id         TEXT PRIMARY KEY,
     venue_id   TEXT NOT NULL REFERENCES venues (id),
     title      TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
-    format     TEXT NOT NULL CHECK (format IN ('singles', 'doubles')),
+    -- What players can sign up for; they pick one or more when joining.
+    formats    TEXT[] NOT NULL
+        CHECK (cardinality(formats) > 0 AND formats <@ ARRAY['singles', 'doubles', 'mixed']),
+    -- Length of one match slot on a court, per format.
+    singles_slot_minutes SMALLINT NOT NULL DEFAULT 30 CHECK (singles_slot_minutes > 0),
+    doubles_slot_minutes SMALLINT NOT NULL DEFAULT 40 CHECK (doubles_slot_minutes > 0),
+    mixed_slot_minutes   SMALLINT NOT NULL DEFAULT 40 CHECK (mixed_slot_minutes > 0),
     starts_at  TIMESTAMPTZ NOT NULL,
     ends_at    TIMESTAMPTZ NOT NULL,
-    -- Money in the currency's minor unit (paise), never a float.
+    -- Joining closes here so the matcher can build the schedule. Walk-ins
+    -- can still take spare slots afterwards.
+    registration_closes_at TIMESTAMPTZ NOT NULL,
+    -- The slot fee, in the currency's minor unit (paise), never a float.
     fee_paise  INTEGER NOT NULL CHECK (fee_paise >= 0),
     currency   TEXT NOT NULL DEFAULT 'INR' CHECK (currency ~ '^[A-Z]{3}$'),
-    -- Players the event takes.
-    capacity   INTEGER NOT NULL CHECK (capacity > 0),
-    -- Optional rating band; the rating scale isn't final, so nothing enforces it yet.
-    rating_min NUMERIC(3, 1),
-    rating_max NUMERIC(3, 1),
+    -- Most players the event takes, and most matches its courts can host.
+    capacity    INTEGER NOT NULL CHECK (capacity > 0),
+    max_matches INTEGER NOT NULL CHECK (max_matches > 0),
+    -- Optional Elo band for who may join; NULL means no limit.
+    rating_min SMALLINT CHECK (rating_min > 0),
+    rating_max SMALLINT CHECK (rating_max > 0),
     -- Events are never deleted, only cancelled: registrations and payments
     -- will refer to them.
     status     TEXT NOT NULL DEFAULT 'draft'
@@ -48,6 +58,7 @@ CREATE TABLE events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (ends_at > starts_at),
+    CHECK (registration_closes_at <= starts_at),
     CHECK (rating_min IS NULL OR rating_max IS NULL OR rating_min <= rating_max),
     UNIQUE (id, venue_id)
 );

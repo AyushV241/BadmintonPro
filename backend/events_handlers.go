@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,6 +16,8 @@ import (
 const (
 	defaultEventsLimit = 20
 	maxEventsLimit     = 50
+	defaultRadiusKm    = 10
+	maxRadiusKm        = 100
 )
 
 var citySlug = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -51,10 +55,39 @@ func decodeCursor(s string) (*EventCursor, error) {
 	return &EventCursor{StartsAt: t, ID: id}, nil
 }
 
+// parseNear reads ?lat=&lng=&radiusKm=. Both coordinates or neither; the
+// radius only applies with them. It returns nil when there is no location.
+func parseNear(params url.Values) (*GeoPoint, float64, error) {
+	latS, lngS, radiusS := params.Get("lat"), params.Get("lng"), params.Get("radiusKm")
+	if latS == "" && lngS == "" {
+		if radiusS != "" {
+			return nil, 0, errors.New("radiusKm needs lat and lng")
+		}
+		return nil, 0, nil
+	}
+	lat, errLat := strconv.ParseFloat(latS, 64)
+	lng, errLng := strconv.ParseFloat(lngS, 64)
+	// NaN slips past range comparisons, so rule it out by name.
+	if errLat != nil || errLng != nil || math.IsNaN(lat) || math.IsNaN(lng) ||
+		lat < -90 || lat > 90 || lng < -180 || lng > 180 {
+		return nil, 0, errors.New("lat and lng must both be given, in degrees")
+	}
+	radius := float64(defaultRadiusKm)
+	if radiusS != "" {
+		r, err := strconv.ParseFloat(radiusS, 64)
+		if err != nil || math.IsNaN(r) || r <= 0 || r > maxRadiusKm {
+			return nil, 0, errors.New("radiusKm must be more than 0 and at most " + strconv.Itoa(maxRadiusKm))
+		}
+		radius = r
+	}
+	return &GeoPoint{Lat: lat, Lng: lng}, radius, nil
+}
+
 // handleListEvents is public: the list carries no information about who has
 // joined, so it can back a signed-out page too.
 //
 //	GET /api/events?city=bangalore&limit=20&cursor=…
+//	GET /api/events?lat=12.93&lng=77.62&radiusKm=5   (each event gets distanceKm)
 func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
 	q := EventQuery{Now: time.Now(), Limit: defaultEventsLimit}
@@ -66,6 +99,13 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		q.City = city
 	}
+	near, radius, err := parseNear(params)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q.Near, q.RadiusKm = near, radius
+
 	if s := params.Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 || n > maxEventsLimit {

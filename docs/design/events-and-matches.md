@@ -92,9 +92,13 @@ separate from events so that can be added without a redesign.
   - venue, distance, date and time;
   - the formats on offer;
   - spots left and the slot fee.
-- The API (Proposed): `GET /api/events?lat=&lng=&radiusKm=`. Distance is
-  computed in SQL with the haversine formula on `venues.lat`/`lng`; the
-  city filter stays as a fallback. PostGIS is not needed at this scale.
+- The API (built): `GET /api/events?lat=&lng=&radiusKm=` keeps events whose
+  venue is within the radius (default 10 km, at most 100), **in start
+  order**, and gives each event its `distanceKm`. The distance is computed
+  in SQL with the haversine formula on `venues.lat`/`lng`; venues without
+  coordinates drop out. `?city=` stays as the fallback when location is
+  refused. PostGIS isn't needed at this scale. A "nearest first" sort can be
+  added later, with a cursor on distance.
 
 ### 4.2 Join and pay (Decided: ₹50 slot fee to secure the place)
 
@@ -395,8 +399,8 @@ change_A   = round(K × (result_A - expected_A))
 
 ## 11. Data model (target)
 
-Built so far (uncommitted, migration `000005_events`): `venues`, `courts`,
-`events`, `event_courts`. The rest is proposed.
+Built so far (migration `000005_events`): `venues`, `courts`, `events`,
+`event_courts`. The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -414,11 +418,10 @@ Built so far (uncommitted, migration `000005_events`): `venues`, `courts`,
 | `rating_changes` | match_id, user_id, discipline, before, after, delta. Unique on (match_id, user_id, discipline) |
 | `role_assignments` | user_id, role, scope (later) |
 
-**Changes to make to `000005` before it runs on the shared Neon database**
-(after that it can't be edited):
-
-- `rating_min`/`rating_max` → whole-number Elo (`SMALLINT`).
-- Add `max_matches`, `formats` and the slot-length columns.
+In `events`, the Elo band is `SMALLINT`, `formats` is a text array, and
+the slot lengths are `singles_slot_minutes`, `doubles_slot_minutes` and
+`mixed_slot_minutes`. `000005` must not be edited once it has run on the
+shared Neon database; change the schema with a new migration after that.
 
 ---
 
@@ -440,10 +443,10 @@ building them, decide:
 
 ## 13. Build order
 
-1. **Done, uncommitted:** venues, courts and events; public
-   `GET /api/events` and `/api/events/{id}`; the `-seed-demo` command.
-2. Change `000005` as in section 11, and add distance search to
-   `/api/events`.
+1. **Done:** venues, courts and events; public `GET /api/events` and
+   `/api/events/{id}`; the `-seed-demo` command.
+2. **Done:** Elo band, formats, slot lengths, `max_matches` and the
+   registration cutoff on events; distance search on `/api/events`.
 3. Admin endpoints and the admin-mode toggle: venues, courts, events,
    judges.
 4. Registrations with holds and the capacity check, plus the event
