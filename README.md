@@ -208,6 +208,18 @@ go run . -migrate    # applies pending migrations to DATABASE_URL, then exits
 golang-migrate records the applied version in a `schema_migrations` table and
 skips anything already done.
 
+### Demo data
+
+```bash
+go run . -seed-demo    # three Bangalore venues with courts, and events in the coming week
+```
+
+It rewrites the same rows each time and moves the events to the next matching
+days, so re-run it whenever the demo events have passed. Like `-migrate` it
+never runs on startup. It also **refuses a `DATABASE_URL` that isn't on this
+machine**, because the repo-root `.env` may point at the shared database; add
+`-allow-remote` only if you mean to write demo data there.
+
 To add one, create the next numbered pair:
 
 ```
@@ -233,6 +245,8 @@ responses are JSON except the OAuth redirects.
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
 | `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` if the OTP provider refuses as too many. Only when `OTP_PROVIDER` is set |
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
+| `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city, `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Public: it says nothing about who joined |
+| `GET` | `/api/events/{id}` | — | One event with its venue and courts. Drafts are `404`; cancelled and completed events stay visible |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
 
@@ -372,6 +386,10 @@ BadmintonPro/
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
 │   ├── phone_handlers.go    # phone sign-in: send and check codes
 │   ├── profile_handlers.go  # profile step, contact-phone verification
+│   ├── events.go            # venues, courts, events; EventStore interface
+│   ├── events_postgres.go   # events queries (Postgres only, no in-memory copy)
+│   ├── events_handlers.go   # public GET /api/events and /api/events/{id}
+│   ├── seed.go              # -seed-demo data
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)

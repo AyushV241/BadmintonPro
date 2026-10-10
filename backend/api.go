@@ -9,7 +9,10 @@ import (
 )
 
 type API struct {
-	store     Store
+	store Store
+	// events is nil when the API runs without a database (some tests); the
+	// events routes are then not registered.
+	events    EventStore
 	providers *oauth.Registry
 	// phone is nil when phone login is disabled.
 	phone *PhoneLogin
@@ -21,6 +24,12 @@ type API struct {
 // NewAPI builds the HTTP API. phone may be nil to disable phone login.
 func NewAPI(store Store, providers *oauth.Registry, phone *PhoneLogin, cookieSecure bool) *API {
 	return &API{store: store, providers: providers, phone: phone, cookieSecure: cookieSecure}
+}
+
+// WithEvents enables the events endpoints.
+func (a *API) WithEvents(events EventStore) *API {
+	a.events = events
+	return a
 }
 
 func (a *API) Routes() http.Handler {
@@ -47,6 +56,12 @@ func (a *API) Routes() http.Handler {
 		// A signed-in (Google) user verifying a contact phone for the profile.
 		mux.HandleFunc("POST /api/me/phone/start", a.handleContactPhoneStart)
 		mux.HandleFunc("POST /api/me/phone/verify", a.handleContactPhoneVerify)
+	}
+
+	// Public: no sign-in needed (see handleListEvents).
+	if a.events != nil {
+		mux.HandleFunc("GET /api/events", a.handleListEvents)
+		mux.HandleFunc("GET /api/events/{id}", a.handleGetEvent)
 	}
 	return mux
 }

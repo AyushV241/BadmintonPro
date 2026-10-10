@@ -35,6 +35,11 @@ func run() error {
 	// every developer's server (and every air reload) would otherwise migrate
 	// it. Apply them deliberately, once, with `go run . -migrate`.
 	migrateOnly := flag.Bool("migrate", false, "apply pending migrations to DATABASE_URL and exit")
+	// Demo data is written only when asked for, never on startup, for the same
+	// reason; and only to a local database unless -allow-remote says otherwise,
+	// because the repo-root .env may point DATABASE_URL at a shared one.
+	seedOnly := flag.Bool("seed-demo", false, "write demo venues and events to DATABASE_URL and exit")
+	allowRemote := flag.Bool("allow-remote", false, "let -seed-demo write to a database that isn't on this machine")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -53,6 +58,10 @@ func run() error {
 		}
 		log.Print("migrations up to date")
 		return nil
+	}
+
+	if *seedOnly {
+		return runSeedDemo(ctx, databaseURL, *allowRemote)
 	}
 
 	store, err := NewPostgresStore(ctx, databaseURL)
@@ -75,7 +84,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           NewAPI(store, providers, phone, cookieSecure).Routes(),
+		Handler:           NewAPI(store, providers, phone, cookieSecure).WithEvents(store).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -94,6 +103,28 @@ func run() error {
 		return err
 	}
 	log.Print("shut down")
+	return nil
+}
+
+func runSeedDemo(ctx context.Context, databaseURL string, allowRemote bool) error {
+	local, err := isLocalDatabase(databaseURL)
+	if err != nil {
+		return err
+	}
+	if !local && !allowRemote {
+		return errors.New("DATABASE_URL isn't on this machine; refusing to write demo data (add -allow-remote if you mean it)")
+	}
+
+	store, err := NewPostgresStore(ctx, databaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := seedDemo(ctx, store.pool, time.Now()); err != nil {
+		return fmt.Errorf("seed demo data: %w", err)
+	}
+	log.Printf("demo data written: %d venues, %d events", len(demoVenues), len(demoEvents))
 	return nil
 }
 
