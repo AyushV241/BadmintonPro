@@ -7,6 +7,7 @@ import type { ButtonProps, ButtonVariant } from "./Button.types";
 
 const VARIANT_MAP = {
   primary: { variant: "contained", color: "primary" },
+  accent: { variant: "contained", color: "accent" },
   secondary: { variant: "outlined", color: "primary" },
   ghost: { variant: "text", color: "primary" },
   danger: { variant: "contained", color: "error" },

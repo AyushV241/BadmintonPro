@@ -1,7 +1,8 @@
 import type { MouseEvent, ReactNode, Ref } from "react";
 import type { BaseProps, Size } from "../../shared/types";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+/** `accent` is the brand lime, for the one main action on a screen. */
+export type ButtonVariant = "primary" | "accent" | "secondary" | "ghost" | "danger";
 
 export interface ButtonProps extends BaseProps {
   children: ReactNode;

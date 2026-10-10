@@ -3,27 +3,41 @@
 @layer theme, base, mui, components, utilities;
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* Colours come from components/ui/theme/tokens.ts. MUI publishes them as CSS
+   variables (switching with prefers-color-scheme), and Tailwind reads those, so
+   `bg-surface` or `text-muted` follows light and dark mode with no `dark:`. */
+@theme inline {
+  --color-background: var(--mui-palette-background-default);
+  --color-foreground: var(--mui-palette-text-primary);
+  --color-surface: var(--mui-palette-background-paper);
+  --color-muted: var(--mui-palette-text-secondary);
+  --color-line: var(--mui-palette-divider);
+  --color-primary: var(--mui-palette-primary-main);
+  --color-on-primary: var(--mui-palette-primary-contrastText);
+  --color-danger: var(--mui-palette-error-main);
+
+  /* Brand colours, the same in both modes (tokens.brand). */
+  --color-lime: #e2fb6c;
+  --color-ink: #151712;
+  /* Lime used as text: full lime is unreadable on light backgrounds. */
+  --color-lime-text: var(--lime-text);
+
+  --font-sans: var(--font-dm-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+:root {
+  --lime-text: #7f9a12;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --lime-text: #e2fb6c;
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
 }

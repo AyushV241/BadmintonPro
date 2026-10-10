@@ -2,45 +2,55 @@
 // Library-agnostic — `muiTheme.ts` reads these today; a different library's
 // theme adapter would read the same values tomorrow.
 //
-// Values match the Tailwind slate palette the existing pages use.
+// Brand: lime accent on near-black "ink", warm off-white in light mode. Lime
+// stays the same in both modes; in dark mode it becomes the primary colour.
+
+const lime = "#e2fb6c";
+const ink = "#151712";
 
 export const tokens = {
   radius: {
-    sm: 6,
-    md: 8,
-    lg: 12,
-    xl: 16,
+    sm: 8,
+    md: 12,
+    lg: 16,
+    xl: 22,
   },
   font: {
-    sans: "var(--font-geist-sans), Arial, Helvetica, sans-serif",
+    sans: "var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif",
     mono: "var(--font-geist-mono), ui-monospace, monospace",
+  },
+  brand: {
+    lime,
+    ink,
+    /** Hover shade of lime. */
+    limeHover: "#d3ee52",
   },
   color: {
     light: {
-      primary: "#0f172a", // slate-900
+      primary: ink,
       primaryContrast: "#ffffff",
-      secondary: "#475569", // slate-600
-      success: "#15803d", // green-700
-      warning: "#b45309", // amber-700
-      danger: "#b91c1c", // red-700
-      background: "#f8fafc", // slate-50
+      secondary: "#6c6f62",
+      success: "#3d7a12",
+      warning: "#b45309",
+      danger: "#c8321f",
+      background: "#f5f5f0",
       surface: "#ffffff",
-      border: "#e2e8f0", // slate-200
-      text: "#0f172a",
-      textMuted: "#64748b", // slate-500
+      border: "#e4e4da",
+      text: ink,
+      textMuted: "#6c6f62",
     },
     dark: {
-      primary: "#f1f5f9", // slate-100
-      primaryContrast: "#0f172a",
-      secondary: "#94a3b8", // slate-400
-      success: "#4ade80", // green-400
-      warning: "#fbbf24", // amber-400
-      danger: "#f87171", // red-400
-      background: "#020617", // slate-950
-      surface: "#0f172a", // slate-900
-      border: "#1e293b", // slate-800
-      text: "#f8fafc",
-      textMuted: "#94a3b8",
+      primary: lime,
+      primaryContrast: ink,
+      secondary: "#9a9d8f",
+      success: "#c4ef5a",
+      warning: "#fbbf24",
+      danger: "#ff7a68",
+      background: "#0e0f0c",
+      surface: "#181a15",
+      border: "#2b2e26",
+      text: "#f3f4ee",
+      textMuted: "#9a9d8f",
     },
   },
 } as const;

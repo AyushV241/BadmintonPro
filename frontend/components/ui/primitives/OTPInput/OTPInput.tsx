@@ -126,7 +126,8 @@ export function OTPInput({
             disabled={disabled}
             autoFocus={autoFocus && i === 0}
             type={mask ? "password" : "text"}
-            sx={{ width: 48, height: 56 }}
+            // Shrinks to fit narrow phones (6 boxes in ~300px) instead of overflowing.
+            sx={{ flex: 1, minWidth: 0, maxWidth: 56, height: 56 }}
             slotProps={{
               input: {
                 "aria-label": `${ariaLabel}, character ${i + 1} of ${length}`,

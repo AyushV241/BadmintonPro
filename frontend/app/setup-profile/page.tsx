@@ -3,7 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { PhoneCodeForm } from "@/components/auth/PhoneCodeForm";
-import { Button, Input, Typography } from "@/components/ui";
+import { Logo } from "@/components/brand/Logo";
+import { FieldLabel } from "@/components/form/FieldLabel";
+import { ArrowRightIcon, MailIcon, ShieldCheckIcon, UserIcon } from "@/components/icons";
+import { Button, Input } from "@/components/ui";
+import { initials } from "@/lib/initials";
 import {
   ApiError,
   me,
@@ -17,8 +21,8 @@ import {
 /**
  * "Set up your profile", shown after the first sign-in:
  * - phone sign-ins: name, username, and an optional (unverified) email;
- * - Google sign-ins: name, username, Google's email read-only, and an
- *   optional phone verified by a code.
+ * - Google sign-ins: name, username, and an optional phone verified by a code.
+ *   Their email comes from Google and isn't asked for.
  */
 export default function SetupProfilePage() {
   const router = useRouter();
@@ -72,103 +76,132 @@ export default function SetupProfilePage() {
 
   if (!user) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
-        <p className="text-sm text-slate-500 dark:text-slate-400">Loading…</p>
+      <main className="flex min-h-dvh items-center justify-center bg-background">
+        <p className="text-sm text-muted">Loading…</p>
       </main>
     );
   }
 
   const phoneAccount = user.signInMethod === "phone";
+  const avatarText = initials(name, username);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12 dark:bg-slate-950">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <Typography variant="h2">Set up your profile</Typography>
-          <Typography variant="bodySmall" color="muted" className="mt-1">
-            This is how other players will find you.
-          </Typography>
+    <main className="relative min-h-dvh overflow-hidden bg-background text-foreground">
+      {/* Decorative lime circles, as in the design. */}
+      <span aria-hidden="true" className="absolute -top-28 -right-28 size-72 rounded-full bg-lime/25" />
+      <span aria-hidden="true" className="absolute top-[420px] -left-40 size-64 rounded-full bg-lime/10" />
+
+      <div className="relative mx-auto flex min-h-dvh w-full max-w-[480px] flex-col px-6 pt-5 pb-[max(32px,env(safe-area-inset-bottom))]">
+        <header>
+          <Logo />
+        </header>
+
+        <span className="mt-10 flex size-16 items-center justify-center rounded-[18px] bg-lime text-ink shadow-[0_10px_30px_rgba(143,174,18,0.35)]">
+          <ShieldCheckIcon className="size-7" />
+        </span>
+
+        <p className="mt-6 text-[11px] font-semibold tracking-[0.14em] text-muted uppercase">
+          Profile setup
+        </p>
+        <h1 className="mt-2 text-[40px] leading-none font-bold tracking-[-0.05em]">
+          Let&rsquo;s get you
+          <br />
+          <span className="text-lime-text">court-ready.</span>
+        </h1>
+        <p className="mt-3 text-[15px] leading-normal text-muted">
+          A few basics before we start matching you with the right players.
+        </p>
+
+        <div className="mt-8 flex items-center gap-4">
+          <span
+            aria-hidden="true"
+            className="flex size-20 shrink-0 items-center justify-center rounded-full border-4 border-surface bg-[#f0b07a] text-2xl font-semibold tracking-[-0.03em] text-ink shadow-sm"
+          >
+            {avatarText || <UserIcon className="size-8" />}
+          </span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-base font-semibold tracking-[-0.02em]">Your player card</span>
+            <span className="text-sm text-muted">This is how other players will see you.</span>
+          </div>
         </div>
 
-        <div className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <form id="profile" onSubmit={handleSubmit} className="space-y-4">
-            {formError && (
-              <p
-                role="alert"
-                className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-400"
-              >
-                {formError}
-              </p>
-            )}
+        <form id="profile" onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
+          {formError && (
+            <p role="alert" className="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
+              {formError}
+            </p>
+          )}
 
+          <div className="flex flex-col gap-2">
+            <FieldLabel htmlFor="profile-name">Full name</FieldLabel>
             <Input
-              label="Name"
+              id="profile-name"
               value={name}
               onChange={setName}
               autoComplete="name"
+              placeholder="Arjun Kapoor"
               maxLength={100}
+              startAdornment={<UserIcon className="size-5" />}
               required
             />
+          </div>
 
+          <div className="flex flex-col gap-2">
+            <FieldLabel htmlFor="profile-username">Username</FieldLabel>
             <Input
-              label="Username"
+              id="profile-username"
               value={username}
               onChange={(v) => {
                 setUsername(v);
                 setUsernameError(null);
               }}
               autoComplete="username"
+              placeholder="arjunk"
               startAdornment="@"
               maxLength={20}
               error={usernameError ?? undefined}
-              helperText="3–20 characters: letters, numbers, _ and ."
+              helperText="How other players find you. 3–20 letters, numbers, _ or ."
               required
             />
+          </div>
 
-            {user.emailVerified ? (
+          {phoneAccount && (
+            <div className="flex flex-col gap-2">
+              <FieldLabel htmlFor="profile-email" optional>
+                Email
+              </FieldLabel>
               <Input
-                label="Email"
-                value={user.email}
-                readOnly
-                helperText="From your Google account"
-              />
-            ) : (
-              <Input
-                label="Email (optional)"
+                id="profile-email"
                 type="email"
                 value={email}
                 onChange={setEmail}
                 autoComplete="email"
+                placeholder="you@example.com"
+                startAdornment={<MailIcon className="size-5" />}
                 helperText="For contact only. You'll still sign in with your phone."
               />
-            )}
-          </form>
-
-          {phoneAccount ? (
-            <Input
-              label="Phone"
-              value={user.phone}
-              readOnly
-              helperText="Your sign-in number"
-            />
-          ) : user.phoneVerified && !changingPhone ? (
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <Typography variant="label">Phone</Typography>
-                <Typography variant="bodySmall">
-                  {user.phone}{" "}
-                  <span className="ml-1 rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
-                    verified
-                  </span>
-                </Typography>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setChangingPhone(true)}>
-                Change
-              </Button>
             </div>
-          ) : (
-            <div className="space-y-2">
-              <Typography variant="label">Phone (optional)</Typography>
+          )}
+        </form>
+
+        {/* Google accounts: an optional contact phone, confirmed by a code. It
+            sits outside the profile form because it's a form of its own. */}
+        {!phoneAccount && (
+          <div className="mt-5 flex flex-col gap-2">
+            <FieldLabel htmlFor="profile-phone" optional>
+              Phone number
+            </FieldLabel>
+            {user.phoneVerified && !changingPhone ? (
+              <div className="flex min-h-14 items-center gap-3 rounded-2xl border border-line bg-surface px-4">
+                <span className="flex-1 text-[15px]">{user.phone}</span>
+                <span className="rounded-full bg-lime px-2.5 py-1 text-xs font-semibold text-ink">
+                  Verified
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => setChangingPhone(true)}>
+                  Change
+                </Button>
+              </div>
+            ) : (
               <PhoneCodeForm
                 start={startContactPhone}
                 verify={verifyContactPhone}
@@ -176,16 +209,30 @@ export default function SetupProfilePage() {
                   setUser(updated);
                   setChangingPhone(false);
                 }}
-                helperText="We'll text a code to confirm it's yours"
+                label=""
+                inputId="profile-phone"
+                numberPrefix="+91"
+                helperText="Useful for match updates and court coordination."
+                sendLabel="Verify"
+                inlineSend
                 verifyLabel="Verify number"
               />
-            </div>
-          )}
+            )}
+          </div>
+        )}
 
-          <Button type="submit" form="profile" fullWidth loading={saving}>
-            Continue
-          </Button>
-        </div>
+        <Button
+          type="submit"
+          form="profile"
+          variant="accent"
+          size="lg"
+          fullWidth
+          loading={saving}
+          endIcon={<ArrowRightIcon />}
+          className="mt-8"
+        >
+          Create my player card
+        </Button>
       </div>
     </main>
   );
