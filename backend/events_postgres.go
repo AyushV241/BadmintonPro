@@ -116,7 +116,7 @@ func (s *PostgresStore) GetEvent(ctx context.Context, id string) (Event, error) 
 		SELECT c.id, c.label
 		FROM event_courts ec JOIN courts c ON c.id = ec.court_id
 		WHERE ec.event_id = $1
-		ORDER BY c.label`, id)
+		ORDER BY length(c.label), c.label`, id) // "Court 2" before "Court 10"
 	if err != nil {
 		return Event{}, fmt.Errorf("event courts: %w", err)
 	}

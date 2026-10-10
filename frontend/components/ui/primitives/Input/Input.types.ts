@@ -1,7 +1,16 @@
 import type { HTMLAttributes, ReactNode, Ref } from "react";
 import type { BaseProps } from "../../shared/types";
 
-export type InputType = "text" | "email" | "password" | "number" | "tel" | "url" | "search";
+export type InputType =
+  | "text"
+  | "email"
+  | "password"
+  | "number"
+  | "tel"
+  | "url"
+  | "search"
+  | "date"
+  | "time";
 
 export interface InputProps extends BaseProps {
   /** Controlled value. Omit and use `defaultValue` for uncontrolled. */

@@ -160,3 +160,160 @@ export async function verifyContactPhone(
   });
   return user;
 }
+
+// --- Events -----------------------------------------------------------------
+
+export type EventFormat = "singles" | "doubles" | "mixed";
+export type EventStatus = "draft" | "published" | "cancelled" | "completed";
+
+export type Venue = {
+  id: string;
+  name: string;
+  address: string;
+  city: string;
+  lat: number | null;
+  lng: number | null;
+  /** IANA zone; show event times in it. */
+  timezone: string;
+};
+
+export type Court = { id: string; label: string };
+
+export type BadmintonEvent = {
+  id: string;
+  title: string;
+  formats: EventFormat[];
+  /** Minutes one match occupies a court, for each format offered. */
+  slotMinutes: Partial<Record<EventFormat, number>>;
+  status: EventStatus;
+  /** ISO 8601, UTC. */
+  startsAt: string;
+  endsAt: string;
+  registrationClosesAt: string;
+  /** Slot fee in paise. */
+  feePaise: number;
+  currency: string;
+  capacity: number;
+  maxMatches: number;
+  spotsLeft: number;
+  /** Elo band; null means no limit. */
+  ratingMin: number | null;
+  ratingMax: number | null;
+  /** Only on location searches. */
+  distanceKm?: number;
+  venue: Venue;
+  /** Only on single-event responses. */
+  courts?: Court[];
+};
+
+// --- Admin mode -------------------------------------------------------------
+// Every /api/admin call needs a session. Admin mode is open to every
+// signed-in user for now; later only people with the role.
+
+export type AdminCourt = Court & { active: boolean };
+export type AdminVenue = Venue & { courts: AdminCourt[] };
+export type Judge = { userId: string; name: string; username: string };
+export type AdminEvent = { event: BadmintonEvent; judges: Judge[] };
+
+export type VenueDraft = {
+  name: string;
+  address: string;
+  /** Slug, e.g. "bangalore". */
+  city: string;
+  lat: number | null;
+  lng: number | null;
+  /** Default "Asia/Kolkata". */
+  timezone?: string;
+  /** Creates "Court 1" … "Court n". */
+  courts: number;
+};
+
+/** An event as the admin form sends it: the venue's local date and times. */
+export type EventDraft = {
+  venueId: string;
+  title: string;
+  formats: EventFormat[];
+  slotMinutes: Partial<Record<EventFormat, number>>;
+  /** "2026-10-17" */
+  date: string;
+  /** "19:30" */
+  startTime: string;
+  endTime: string;
+  registrationClosesMinutesBefore: number;
+  feePaise: number;
+  capacity: number;
+  maxMatches: number;
+  ratingMin: number | null;
+  ratingMax: number | null;
+  courtIds: string[];
+};
+
+export async function adminListVenues(): Promise<AdminVenue[]> {
+  const { venues } = await request<{ venues: AdminVenue[] }>("/api/admin/venues");
+  return venues;
+}
+
+export async function adminCreateVenue(venue: VenueDraft): Promise<AdminVenue> {
+  const res = await request<{ venue: AdminVenue }>("/api/admin/venues", {
+    method: "POST",
+    body: JSON.stringify(venue),
+  });
+  return res.venue;
+}
+
+/** 409 if the venue already has a court with that label. */
+export async function adminAddCourt(venueId: string, label: string): Promise<AdminCourt> {
+  const res = await request<{ court: AdminCourt }>(
+    `/api/admin/venues/${encodeURIComponent(venueId)}/courts`,
+    { method: "POST", body: JSON.stringify({ label }) },
+  );
+  return res.court;
+}
+
+/** Events in every status, latest start first. */
+export async function adminListEvents(status?: EventStatus): Promise<BadmintonEvent[]> {
+  const query = status ? `?status=${status}` : "";
+  const { events } = await request<{ events: BadmintonEvent[] }>(`/api/admin/events${query}`);
+  return events;
+}
+
+export function adminGetEvent(id: string): Promise<AdminEvent> {
+  return request<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}`);
+}
+
+/** Saves a new event as a draft. */
+export function adminCreateEvent(draft: EventDraft): Promise<AdminEvent> {
+  return request<AdminEvent>("/api/admin/events", { method: "POST", body: JSON.stringify(draft) });
+}
+
+/** Only drafts can be edited (409 otherwise). */
+export function adminUpdateEvent(id: string, draft: EventDraft): Promise<AdminEvent> {
+  return request<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(draft),
+  });
+}
+
+export function adminPublishEvent(id: string): Promise<AdminEvent> {
+  return request<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}/publish`, { method: "POST" });
+}
+
+export function adminCancelEvent(id: string): Promise<AdminEvent> {
+  return request<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}
+
+/** 404 if no user has that username. */
+export async function adminAddJudge(eventId: string, username: string): Promise<Judge> {
+  const res = await request<{ judge: Judge }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/judges`,
+    { method: "POST", body: JSON.stringify({ username }) },
+  );
+  return res.judge;
+}
+
+export function adminRemoveJudge(eventId: string, userId: string): Promise<void> {
+  return request<void>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/judges/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
+}

@@ -84,7 +84,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           NewAPI(store, providers, phone, cookieSecure).WithEvents(store).Routes(),
+		Handler:           NewAPI(store, providers, phone, cookieSecure).WithEvents(store).WithAdmin(store).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -234,6 +234,10 @@ to the Go server on `:8080` (see `frontend/next.config.ts`), so the session
 cookie is on the same origin as the app and no CORS is involved. All
 responses are JSON except the OAuth redirects.
 
+"admin" routes need a session and go through one `requireAdmin` check. For
+now that only requires being signed in, so **anyone signed in can use admin
+mode**; it will check roles later (see the design doc, section 10).
+
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | Liveness check |
@@ -247,6 +251,17 @@ responses are JSON except the OAuth redirects.
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
 | `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city. `?lat=&lng=&radiusKm=` keeps venues within that distance (default 10 km, at most 100) and adds `distanceKm` to each event; venues without coordinates drop out. `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Each event has its `formats`, `slotMinutes` per format, `feePaise`, `capacity`, `maxMatches`, `registrationClosesAt` and an optional Elo band (`ratingMin`/`ratingMax`). Public: it says nothing about who joined |
 | `GET` | `/api/events/{id}` | — | One event with its venue and courts. Drafts are `404`; cancelled and completed events stay visible |
+| `GET` | `/api/admin/venues` | admin | Every venue with its courts |
+| `POST` | `/api/admin/venues` | admin | `{"name","address","city","lat"?,"lng"?,"timezone"?,"courts"}`: creates a venue and `courts` courts named "Court 1" … "Court n". Time zone defaults to `Asia/Kolkata` |
+| `POST` | `/api/admin/venues/{id}/courts` | admin | `{"label"}`: adds a court. `409` if the venue already has that label |
+| `GET` | `/api/admin/events` | admin | Events in every status, latest first; `?status=draft` and so on to filter |
+| `POST` | `/api/admin/events` | admin | Creates a **draft**: `{"venueId","title","formats","slotMinutes"?,"date":"2026-10-17","startTime":"19:30","endTime":"22:30","registrationClosesMinutesBefore"?,"feePaise","capacity","maxMatches","ratingMin"?,"ratingMax"?,"courtIds"}`. Times are the venue's local times; `maxMatches` can't exceed whole slots on the chosen courts. `400` with a message on invalid input |
+| `GET` | `/api/admin/events/{id}` | admin | `{"event","judges"}`, drafts included |
+| `PUT` | `/api/admin/events/{id}` | admin | Same body as create. Drafts only: `409` once published |
+| `POST` | `/api/admin/events/{id}/publish` | admin | Draft → published (players can see it). `409` from any other status or once the start has passed |
+| `POST` | `/api/admin/events/{id}/cancel` | admin | Draft or published → cancelled. Events are never deleted |
+| `POST` | `/api/admin/events/{id}/judges` | admin | `{"username"}` (any case, `@` optional): adds a judge. `404` if no one has that username |
+| `DELETE` | `/api/admin/events/{id}/judges/{userId}` | admin | Removes a judge |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
 
@@ -390,6 +405,9 @@ BadmintonPro/
 │   ├── events_postgres.go   # events queries (Postgres only, no in-memory copy)
 │   ├── events_handlers.go   # public GET /api/events and /api/events/{id}
 │   ├── seed.go              # -seed-demo data
+│   ├── admin.go             # admin mode: AdminStore interface, venue/event validation
+│   ├── admin_postgres.go    # admin queries
+│   ├── admin_handlers.go    # /api/admin/*, behind requireAdmin
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)

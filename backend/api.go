@@ -12,7 +12,10 @@ type API struct {
 	store Store
 	// events is nil when the API runs without a database (some tests); the
 	// events routes are then not registered.
-	events    EventStore
+	events EventStore
+	// admin is nil without a database too; the /api/admin routes then
+	// aren't registered.
+	admin     AdminStore
 	providers *oauth.Registry
 	// phone is nil when phone login is disabled.
 	phone *PhoneLogin
@@ -29,6 +32,12 @@ func NewAPI(store Store, providers *oauth.Registry, phone *PhoneLogin, cookieSec
 // WithEvents enables the events endpoints.
 func (a *API) WithEvents(events EventStore) *API {
 	a.events = events
+	return a
+}
+
+// WithAdmin enables admin mode's endpoints. They need WithEvents too.
+func (a *API) WithAdmin(admin AdminStore) *API {
+	a.admin = admin
 	return a
 }
 
@@ -62,6 +71,9 @@ func (a *API) Routes() http.Handler {
 	if a.events != nil {
 		mux.HandleFunc("GET /api/events", a.handleListEvents)
 		mux.HandleFunc("GET /api/events/{id}", a.handleGetEvent)
+	}
+	if a.events != nil && a.admin != nil {
+		a.registerAdminRoutes(mux)
 	}
 	return mux
 }

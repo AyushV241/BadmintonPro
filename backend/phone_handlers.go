@@ -162,7 +162,13 @@ func phoneErrorMessage(err error) string {
 
 // decodeSmallJSON decodes a small, strict JSON body, writing a 400 on failure.
 func decodeSmallJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+	return decodeJSONBody(w, r, v, 1<<10)
+}
+
+// decodeJSONBody decodes a strict JSON body of at most maxBytes, writing a 400 on
+// failure. Unknown fields are rejected so typos don't pass silently.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "request body must be valid JSON")

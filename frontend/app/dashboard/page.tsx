@@ -3,9 +3,12 @@
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { BottomNav } from "@/components/app/BottomNav";
-import { ArrowRightIcon, ClockIcon, LogoutIcon, PinIcon, TrendUpIcon } from "@/components/icons";
+import { Switch } from "@/components/form/Switch";
+import { ArrowRightIcon, ClockIcon, LogoutIcon, PinIcon, ShieldIcon, TrendUpIcon } from "@/components/icons";
 import { BottomSheet, Button, useBottomSheet } from "@/components/ui";
+import { setAdminMode, useAdminMode } from "@/lib/adminMode";
 import { logout, me, type User } from "@/lib/api";
 import { initials } from "@/lib/initials";
 import {
@@ -242,6 +245,7 @@ export default function HomePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const account = useBottomSheet("account");
+  const adminMode = useAdminMode();
 
   useEffect(() => {
     // The session cookie is httpOnly, so the only way to know whether we are
@@ -293,6 +297,21 @@ export default function HomePage() {
         </header>
 
         <div className="flex flex-col gap-8 px-5">
+          {adminMode && (
+            <Link
+              href="/admin"
+              className="-mb-3 flex items-center gap-3 rounded-[20px] border border-line bg-surface p-4"
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-lime text-ink">
+                <ShieldIcon className="size-5" />
+              </span>
+              <span className="flex flex-1 flex-col">
+                <span className="text-[15px] font-semibold tracking-[-0.01em]">Admin mode is on</span>
+                <span className="text-xs text-muted">Manage venues, events and judges</span>
+              </span>
+              <ArrowRightIcon className="size-5 text-muted" />
+            </Link>
+          )}
           <NextEventCard event={nextEvent} />
 
           <section className="flex flex-col gap-4">
@@ -335,6 +354,14 @@ export default function HomePage() {
           <p className="text-xs text-muted">
             You sign in with {user.signInMethod === "google" ? "Google" : "your phone number"}.
           </p>
+          <p className="pt-2 text-[11px] font-semibold tracking-[0.14em] text-muted uppercase">Settings</p>
+          {/* Open to everyone for now; later only people with the admin role see it. */}
+          <Switch
+            checked={adminMode}
+            onChange={setAdminMode}
+            label="Admin mode"
+            description="Create venues and events, and assign judges."
+          />
         </div>
       </BottomSheet>
     </main>

@@ -2,7 +2,7 @@
 
 The core logic of BadmintonPro: how players find an event, pay for a slot,
 get matched, play a judged match with live scoring, and have their rating
-change. Read this before working on events, registrations, payments,
+change. Read this before working on events, entries, payments,
 matchmaking, scoring or ratings.
 
 Each rule below is tagged as one of:
@@ -12,25 +12,32 @@ Each rule below is tagged as one of:
   unless it's revisited.
 - **Open:** not decided yet. Ask before building anything that depends on it.
 
-Last updated 2026-10-10.
+Last updated 2026-10-11.
 
 ---
 
 ## 1. The idea in one paragraph
 
-Admins host **events** at venues on courts they've already booked. A player
-sees the events near them, picks one, and **pays a small slot fee (₹50) to
-join its player pool**, saying which formats they want to play. Before the
-event, a **matching algorithm** turns the pool into matches. Each match has
-an opponent (or a team for doubles), a court, a time and a **judge**. The
-judge scores the match live on their phone, and players and spectators see
-the score update in real time. When the match ends, both sides' **Elo
-ratings** change. Players who turn up at the venue without registering can
-still join if there are free slots.
+Admins host **events** at venues on courts they've already booked. Every
+match in an event comes from the event's **pool**. A player gets into the
+pool by buying an **entry** (₹50), and **each entry is one match**. There
+are two kinds:
 
-Matches outside events, where two players arrange a game themselves on a
-normal day, are **future work** (section 12). The model below keeps matches
-separate from events so that can be added without a redesign.
+- an **open entry**: the player says which formats they'll play, and the
+  **matching algorithm** picks their opponent (or team for doubles);
+- a **locked entry**: the player has **challenged** a friend (section 12),
+  so the opponent is already fixed and the matcher only finds them a slot.
+
+A player can hold several entries in the same event, such as one open
+entry and one challenge, and pays for each. Every match gets a court, a
+time and a **judge**. The judge scores the match live on their phone, and
+players and spectators see the score update in real time. When the match
+ends, both sides' **Elo ratings** change. Players who turn up at the venue
+can still buy an entry if there are free slots.
+
+Matches with no event at all, where two players arrange a game themselves
+on a normal day, are **future work** (section 14). The model below keeps
+matches separate from events so that can be added without a redesign.
 
 ---
 
@@ -40,14 +47,15 @@ separate from events so that can be added without a redesign.
 | --- | --- |
 | **Venue** | A place with badminton courts. It has a city, coordinates and a time zone. |
 | **Court** | One court at a venue, e.g. "Court 3". |
-| **Event** | A session an admin runs at one venue, on a set of booked courts, over a time window on one day. It is the unit a player joins and pays for. |
+| **Event** | A session an admin runs at one venue, on a set of booked courts, over a time window on one day. Players buy entries into it. |
 | **Format** | `singles`, `doubles` or `mixed` (mixed doubles). |
-| **Registration** | A player's place in an event's pool: which formats they want, payment status, and whether they joined online or as a walk-in. |
-| **Pool** | All confirmed (paid) registrations for an event. The matcher works from the pool. |
+| **Entry** | One paid match for one player in an event. **Open**: the matcher picks the opponent. **Locked**: the opponent is fixed by a challenge. It also records whether it was bought online or as a walk-in. |
+| **Pool** | All confirmed (paid) entries for an event. Every match in the event comes from the pool. |
 | **Slot** | One court for one block of time, e.g. Court 2, 19:30–20:00. Each match uses exactly one slot. |
 | **Match** | Two sides playing each other in one slot. A side is one player (singles) or two (doubles). |
 | **Judge** | The person who scores a match live. Each match needs one. |
 | **Rating** | A player's Elo rating for a discipline. The expected range is about 1200–2000. |
+| **Challenge** | One player's request to play a named opponent at a chosen event and time. Once accepted and paid, it becomes two locked entries (section 12). |
 | **Admin mode** | The part of the app for running events (section 10). |
 
 ---
@@ -66,16 +74,19 @@ separate from events so that can be added without a redesign.
 4. **Times are stored as `timestamptz` in UTC** and shown in the venue's
    time zone.
 5. **Nothing a payment or a match points at is ever deleted.** Events,
-   registrations and matches are cancelled (their status changes) instead.
+   entries and matches are cancelled (their status changes) instead.
 6. **Capacity is checked inside a database transaction.** Two people can't
    both get the last spot.
 7. **A match that players have already been told about is never quietly
    reshuffled.** Late changes, such as walk-ins or no-shows, only fill
    empty slots or replace a missing player. They never move someone who
-   has already been notified.
+   has already been notified. (Later, an admin will be able to move or
+   delete a slot by hand, and the players are told. Not in version 1.)
 8. **The server is the source of truth for scores.** The judge's app sends
    point events; the server checks them against the scoring rules and works
    out the score.
+9. **One entry, one match, one payment** (Decided). An entry is never
+   used for a second match, and a player pays for every match they're in.
 
 ---
 
@@ -91,7 +102,7 @@ separate from events so that can be added without a redesign.
   different venues), each with:
   - venue, distance, date and time;
   - the formats on offer;
-  - spots left and the slot fee.
+  - spots left and the entry fee.
 - The API (built): `GET /api/events?lat=&lng=&radiusKm=` keeps events whose
   venue is within the radius (default 10 km, at most 100), **in start
   order**, and gives each event its `distanceKm`. The distance is computed
@@ -100,35 +111,44 @@ separate from events so that can be added without a redesign.
   refused. PostGIS isn't needed at this scale. A "nearest first" sort can be
   added later, with a cursor on distance.
 
-### 4.2 Join and pay (Decided: ₹50 slot fee to secure the place)
+### 4.2 Join and pay (Decided: ₹50 per entry, one entry per match)
 
-1. The player opens an event and picks:
-   - **formats**: one or more of singles, doubles and mixed;
-   - **partner**, optional: they can pick a doubles partner, or leave it
-     to the matcher.
-2. **The place is held while they pay** (Proposed: for 10 minutes):
-   - A `registration` is created as `pending_payment`, and the event's
-     capacity check and the insert happen in one transaction.
-   - If payment doesn't succeed before the hold expires, the place is
+1. The player opens an event and taps **Join**, which buys an **open
+   entry**. They pick:
+   - **formats**: one or more of singles, doubles and mixed. The entry
+     gets one match, in one of those formats;
+   - **partner**, optional, for doubles: a partner who also has an entry in
+     this event. Without one, the matcher makes the team.
+
+   To play a chosen opponent instead, they send a challenge (section 12).
+2. **The spot is held while they pay** (Proposed: for 10 minutes):
+   - An `entry` is created as `pending_payment`, and the event's capacity
+     check and the insert happen in one transaction.
+   - If payment doesn't succeed before the hold expires, the spot is
      released.
 3. **Payment:**
    - It goes through a payment-provider adapter, built the same way as the
      OTP adapter (Proposed: Razorpay first).
    - The **provider's webhook** confirms the payment, not the browser
      redirect. Webhooks are idempotent: a repeated webhook changes nothing.
-4. Once paid, the registration is `confirmed` and the player joins the pool.
-   They see: **"You're in. We'll notify you once your match is scheduled."**
+4. Once paid, the entry is `confirmed` and joins the pool. The player sees:
+   **"You're in. We'll notify you once your match is scheduled."**
+5. **Another match the same day** means buying another entry, with the
+   same steps (Proposed: at most 3 entries per player per event).
 
 **Event limits** (Decided: per venue, per day):
 
-- `capacity`: the most players the event takes.
+- `capacity`: the most entries the event takes.
 - `max_matches`: the most matches it can host. This can't exceed the
   number of slots: courts × (event length ÷ slot length).
 
 ### 4.3 Scheduling (Decided: done by the matching algorithm)
 
-- The matcher runs per event (section 6) and publishes a schedule.
-- Each player is notified of:
+- Locked entries (challenges) get their slot as soon as both players have
+  paid (section 12).
+- Open entries are matched when the matcher runs (section 6), which then
+  publishes the schedule.
+- For each match, the player is notified of:
   - their opponent or team;
   - the court and time;
   - the judge.
@@ -137,14 +157,15 @@ separate from events so that can be added without a redesign.
 
 ### 4.4 Match day
 
-1. **Check-in.** (Proposed.) The player checks in at the venue by scanning
-   the venue's QR code or being marked by the judge. Check-in closes 10
-   minutes before their slot.
-2. **No-shows.** A player who hasn't checked in by then is a no-show:
-   - their slot opens up for a walk-in or someone on standby (section 7);
+1. **Check-in.** (Proposed.) The player checks in once at the venue, by
+   scanning the venue's QR code or being marked by the judge. That covers
+   all their entries for the day. Check-in closes 10 minutes before their
+   first slot.
+2. **No-shows.** A player who misses a match is a no-show for that match:
+   - its slot opens up for a walk-in or someone on standby (section 7);
    - their opponent gets a **walkover**, which doesn't change anyone's
      rating (Proposed);
-   - the no-show loses their fee.
+   - the no-show loses that entry's fee.
 3. **Live scoring.** The judge starts the match and scores each point
    (section 8). Players and spectators watch it live.
 
@@ -163,20 +184,21 @@ separate from events so that can be added without a redesign.
   - booked courts;
   - a time window, `starts_at` to `ends_at`;
   - a **slot length** per format (Proposed defaults: singles 30 min,
-    doubles and mixed 40 min, editable per event);
-  - a **minimum and maximum matches per player** (Open: how many matches
-    does the ₹50 fee buy? Proposed: at least 1 guaranteed, more when slots
-    are free).
+    doubles and mixed 40 min, editable per event).
+- **Each entry is exactly one match** (Decided). A player who wants more
+  matches buys more entries; there are no free extra matches.
 - Total slots = the sum over courts of how many slot lengths fit in the
   window.
-- Registration closes when either:
-  - confirmed registrations reach `capacity`, or
-  - the matches the pool needs at the guaranteed minimum would exceed the
-    available slots or `max_matches`.
+- **Joining closes** when either:
+  - confirmed and held entries reach `capacity`, or
+  - the matches those entries need would exceed the available slots or
+    `max_matches`. A locked pair needs exactly one match. An open entry is
+    counted as half a match, the most it can need (singles); doubles uses
+    less.
 
-  The registration endpoint enforces this inside a transaction.
-- Slots the minimum doesn't need are **spare**. They're used for extra
-  matches, walk-ins, or replacements after no-shows.
+  The join endpoint enforces this inside a transaction.
+- Slots the pool doesn't need are **spare**. They're used for walk-ins and
+  replacements after no-shows.
 
 ---
 
@@ -185,7 +207,7 @@ separate from events so that can be added without a redesign.
 **When it runs** (Proposed):
 
 - **A main run at the registration cutoff,** e.g. 2 hours before the start
-  (configurable). It builds the whole schedule.
+  (configurable). It matches the open entries and builds the schedule.
 - **Small extra runs afterwards** for walk-ins, no-shows and spare slots.
   These follow rule 7: they only fill gaps.
 - Admins can also run it by hand from admin mode, to preview the schedule
@@ -193,45 +215,49 @@ separate from events so that can be added without a redesign.
 
 **What it receives:**
 
-- the pool: each player's ratings per format, chosen formats, partner if
-  any, and gender if mixed was chosen;
-- the event's slots;
+- the open entries in the pool: each player's ratings per format, the
+  entry's formats, partner if any, and gender if mixed was chosen;
+- the slots already taken by scheduled challenges, which it never moves;
+- the event's free slots;
 - the event's judges.
 
-**Pairing** (Proposed), per format:
+**Pairing** (Proposed), per format, for open entries only:
 
 1. **Singles:**
-   1. Sort players by singles rating.
+   1. Sort entries by the player's singles rating.
    2. Pair neighbours, so the rating gap is as small as possible.
    3. Pairs must be no more than about 200 apart. If that's impossible,
       allow the closest pair and flag it for the admin.
-   4. No pair plays twice in the same event.
+   4. Never pair a player with themselves (two entries of the same
+      player), and no two players meet twice in the same event through
+      open entries.
 2. **Doubles:**
-   1. Keep the pairs who registered together.
-   2. Make teams from the solo players. Sort them by doubles rating; in
+   1. Keep the partners who joined together.
+   2. Make teams from the solo entries. Sort them by doubles rating; in
       each group of four, team the highest with the lowest and the middle
       two together, then those two teams play.
    3. A team's rating is the average of its two players.
 3. **Mixed:** like doubles, but each team is one man and one woman. This
    needs a gender field on the profile, asked only when someone chooses
    mixed (Open: wording and options).
-4. **Fairness across the event:** first make sure everyone gets their
-   guaranteed matches, then hand out spare slots to whoever has played
-   least.
-5. **Leftover players** who couldn't be matched, such as an odd one out:
+4. **Every confirmed entry gets exactly one match.** An entry that allows
+   several formats is placed in whichever format pairs it best.
+5. **Leftover entries** that couldn't be matched, such as an odd one out:
    - first, they go on **standby** for walk-ins and no-shows;
    - if still unmatched at the end, they're **refunded automatically**
      (Proposed).
 
 **Slots and judges:**
 
-- Fill slots in time order, and don't give a player two matches in a row
-  unless they asked for it.
+- Fill slots in time order.
+- **A player with several entries never gets overlapping or back-to-back
+  slots** (Decided): leave at least one slot between their matches,
+  including any challenge match they already have.
 - Each slot needs a free judge who isn't playing in that match. If there
   aren't enough judges, leave the slot empty and flag it for the admin.
 
 **Determinism:** the same input must give the same schedule. Break ties by
-user ID, so runs can be tested and compared.
+entry ID, so runs can be tested and compared.
 
 ---
 
@@ -240,23 +266,50 @@ user ID, so runs can be tested and compared.
 **Two ways in (Proposed: build both):**
 
 1. **QR self-join (preferred).** The venue shows an event QR code. The
-   player scans it, signs in with their phone, and joins in the app:
+   player scans it, signs in with their phone, and buys an entry in the
+   app:
    - same flow as 4.2, but allowed after the online cutoff while the event
      is running;
    - it's open only while spare slots exist;
-   - the registration is marked `source = walk_in`.
-2. **Desk-assisted** (for players without the app). An admin, in admin mode:
-   1. looks the player up by phone number, or creates their account (they
-      confirm with a phone code on their own phone, or the admin enters
-      their name and number and they claim the account later);
+   - the entry is marked `source = walk_in`.
+2. **Desk-assisted** (for players who come to the admin). An admin, in
+   admin mode:
+   1. **finds the player's existing account first**, and only creates one
+      if none is found (below);
    2. records the payment as **offline** (cash or UPI to the venue), noting
       which admin took it, or sends them an in-app payment link.
 
+**Finding the account at the desk** (Proposed). A second account would
+restart the player at 1200 and split their history, so the desk always
+searches before it creates:
+
+1. **Look them up**, best first:
+   - the player shows their **player card** in the app (a QR code and their
+     @username), which identifies the account exactly;
+   - search by **phone number**, matching phone sign-in accounts and the
+     verified contact phone on Google accounts. If more than one account
+     matches, the admin sees each one's name, @username and rating and
+     picks;
+   - search by **@username** (section 13).
+2. **Confirm it's them.** Unless they showed the player card in the app, a
+   one-time code goes to the account's phone and the player reads it out.
+   This stops someone playing on another person's rating.
+3. **Check what they already have in this event:**
+   - entries already paid: check them in. A further match is a new entry,
+     paid again;
+   - an entry waiting for payment: turn it into an offline payment;
+   - nothing yet: a new walk-in entry.
+4. **No account found:** the admin enters their name and number, and the
+   account is only created once the player confirms a code sent to that
+   phone. A mistyped or someone else's number never gets the account.
+
+The match uses the player's real rating for that format.
+
 **Getting them a match:**
 
-- An extra matching run (section 6) pairs walk-ins with:
+- An extra matching run (section 6) pairs walk-in entries with:
   - each other;
-  - standby players;
+  - standby entries;
   - players left without an opponent by a no-show.
 - They only go into empty slots, never into a slot already given out
   (rule 7).
@@ -265,8 +318,8 @@ user ID, so runs can be tested and compared.
 
 **Limits:**
 
-- Walk-ins count towards the event's `capacity` and `max_matches` like
-  everyone else.
+- Walk-in entries count towards the event's `capacity` and `max_matches`
+  like every other entry.
 - The QR self-join closes when no spare slots are left.
 
 ---
@@ -377,11 +430,38 @@ change_A   = round(K × (result_A - expected_A))
   admin screens.
   - For now, any signed-in user can turn it on.
   - Later, only people given the role will see it.
-- **The check:** every admin endpoint goes under `/api/admin/…` behind one
-  `requireAdmin` check. Today it only requires being signed in; later it
-  will check a `role_assignments` table. Only that function changes.
-  **While it's open to everyone, anyone signed in can create events on
-  whatever database the server uses.**
+- **The check (built):** every admin endpoint goes under `/api/admin/…`
+  behind one `requireAdmin` check (`backend/admin_handlers.go`). Today it
+  only requires being signed in; later it will check a `role_assignments`
+  table. Only that function changes. **While it's open to everyone, anyone
+  signed in can create events on whatever database the server uses.**
+- **The toggle (built):** "Admin mode" in the account sheet on Home. It's
+  remembered per browser and only changes what the app shows; the server
+  decides access.
+
+**Rules for when roles arrive:**
+
+- Check the role on the server on **every request**, never cached in the
+  session, so revoking it takes effect at once. Return 403 without it.
+- Grant roles only outside user-editable paths: a CLI flag, a migration or
+  SQL. Never through the profile or any request body. Request bodies reject
+  unknown fields, so a stray `"role"` can't slip in.
+- Accounts are per sign-in method, so a role granted to someone's Google
+  account doesn't apply when they sign in by phone.
+- Prefer Google accounts for admins: recycled numbers and SIM swaps would
+  hand a phone account's role to whoever gets the number.
+- Anything that changes data stays POST, PUT or DELETE. The session cookie
+  is SameSite=Lax, which still rides along on cross-site GET navigations.
+- Consider an audit row per admin action. Events already record
+  `created_by`.
+
+**Court bookings are entered by hand** (Decided). Venues have no booking
+API, so the admin books courts with the venue directly and enters the
+event with the courts it uses. The app can't see bookings made elsewhere.
+
+**No double-booking our own courts** (Proposed): two events that aren't
+cancelled can't use the same court at overlapping times. Check it when an
+event is saved and when it's published, inside the transaction.
 
 **What admins do:**
 
@@ -390,6 +470,7 @@ change_A   = round(K × (result_A - expected_A))
   formats, capacity, `max_matches` and fee.
 - Assign judges to an event.
 - Preview, run and publish the schedule.
+- Later: move or delete scheduled slots, telling the players affected.
 - Run the walk-in desk.
 - Mark no-shows.
 - Void matches.
@@ -406,13 +487,15 @@ Built so far (migration `000005_events`): `venues`, `courts`, `events`,
 | --- | --- |
 | `venues` | id, name, address, city, lat, lng, timezone |
 | `courts` | id, venue_id, label, active |
-| `events` | id, venue_id, title, starts_at, ends_at, status, fee_paise, currency, capacity, max_matches, formats (array), slot_minutes per format, registration_closes_at, rating_min/max (whole-number Elo) |
+| `events` | id, venue_id, title, starts_at, ends_at, status, fee_paise (per entry), currency, capacity (most entries), max_matches, formats (array), slot_minutes per format, registration_closes_at, rating_min/max (whole-number Elo) |
 | `event_courts` | event_id, court_id, venue_id (composite keys keep courts at the event's venue) |
-| `event_judges` | event_id, user_id |
-| `registrations` | id, event_id, user_id, formats, partner_user_id, source (`online` or `walk_in`), status (`pending_payment`, `confirmed`, `standby`, `cancelled`, `refunded`, `no_show`), hold_expires_at, checked_in_at. Unique on (event_id, user_id) |
-| `payments` | id, registration_id, provider, provider_ref, amount_paise, currency, status, kind (`online` or `offline`), recorded_by (admin, for offline), idempotency_key |
-| `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side, rated (bool) |
-| `match_sides` | match_id, side (`A` or `B`), user_id |
+| `event_judges` | event_id, user_id, added_at (built, `000006`) |
+| `entries` | id, event_id, user_id, kind (`open` or `locked`), formats, partner_user_id (open doubles), challenge_id (locked), source (`online` or `walk_in`), status (`pending_payment`, `confirmed`, `standby`, `scheduled`, `cancelled`, `refunded`, `no_show`), hold_expires_at, match_id (once scheduled), created_at. **Not** unique on (event_id, user_id): a player can hold several entries |
+| `event_checkins` | event_id, user_id, checked_in_at. One check-in per player per event covers all their entries |
+| `payments` | id, entry_id, user_id, provider, provider_ref, amount_paise, currency, status, kind (`online` or `offline`), recorded_by (admin, for offline), idempotency_key. One successful payment per entry |
+| `challenges` | id, event_id, format, challenger_id, opponent_id, preferred_start, status (`pending`, `accepted`, `scheduled`, `declined`, `withdrawn`, `expired`, `failed`), expires_at, pay_by, responded_at, created_at. At most one open challenge per pair per event |
+| `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side. Every match is rated; a voided match is reversed (section 9) |
+| `match_sides` | match_id, side (`A` or `B`), user_id, entry_id |
 | `match_points` | match_id, seq, side, kind (`point` or `undo`), client_id, created_at. Unique on (match_id, seq) and (match_id, client_id) |
 | `player_ratings` | user_id, discipline, rating, matches_played, provisional. Key: (user_id, discipline) |
 | `rating_changes` | match_id, user_id, discipline, before, after, delta. Unique on (match_id, user_id, discipline) |
@@ -420,55 +503,174 @@ Built so far (migration `000005_events`): `venues`, `courts`, `events`,
 
 In `events`, the Elo band is `SMALLINT`, `formats` is a text array, and
 the slot lengths are `singles_slot_minutes`, `doubles_slot_minutes` and
-`mixed_slot_minutes`. `000005` must not be edited once it has run on the
-shared Neon database; change the schema with a new migration after that.
+`mixed_slot_minutes`. `capacity` now means the most entries, not the most
+people; the column keeps its name. `000005` must not be edited once it has
+run on the shared Neon database; change the schema with a new migration
+after that.
 
 ---
 
-## 12. Future: matches outside events
+## 12. Challenges: one player challenges another (Decided flow)
 
-These are everyday rated matches, with no event: two players arrange a game
-themselves.
+A challenge is how a player gets a **locked entry**: they play the
+opponent they chose instead of one the matcher picks. It's still part of
+the event's pool, so it gets a venue, court, time and judge like any other
+match.
+
+**The flow** (Decided):
+
+1. The challenger taps **Send match request**. A sheet opens with a
+   username search at the top (section 13) and their **recent players**
+   below: people they've played or challenged. A friends list can replace
+   this later.
+2. They pick the opponent, then choose:
+   - **a venue, from the venues with upcoming published events**;
+   - **a date**, from that venue's event dates. The venue and date pick
+     the event;
+   - **a preferred time**, inside that event's window;
+   - the format: **singles only in version 1** (Decided). Doubles needs a
+     partner and two opponents to accept, so it comes later.
+3. The opponent is notified and **accepts or declines**.
+4. Once accepted, a **locked entry is created for each player**, and
+   **both pay** the event's entry fee, through the same payment flow as
+   section 4.2.
+5. Once both have paid, the **match is fixed straight away**: the free slot
+   closest to the preferred time (the earlier one on a tie), a court, and a
+   judge from the event's judges. Both players are told the venue, court,
+   date, time and judge.
+
+**Rules** (Proposed unless marked):
+
+- **Who can challenge whom.** Checked when the challenge is sent and again
+  when it's accepted: both profiles are complete; the event is published
+  and still open for joining; both players are inside its rating band; it
+  offers the format; nobody challenges themselves; neither player is over
+  the per-event entry limit; and there's at most one open challenge
+  between the same two players for the same event.
+- **Expiry.** An unanswered challenge expires after 24 hours or at the
+  event's registration cutoff, whichever comes first.
+- **Holding the spot.** Accepting creates both locked entries as
+  `pending_payment`, in the same transaction as the capacity check. They
+  count as two entries against `capacity` and one match against
+  `max_matches`, so the event can't fill up while they pay. Both must pay
+  within 2 hours of accepting, and before the registration cutoff.
+- **Only one pays.** The challenge fails and the payer is refunded
+  automatically (Open: or turn their entry into an open one instead).
+- **Every match is paid for** (Decided). A player who already has an open
+  entry in the event still pays for the challenge: it's a separate entry
+  and a separate match.
+- **Fixing the slot.** The slot must not overlap or sit right next to
+  another match the player already has in the event (section 6). The main
+  matcher run treats a scheduled challenge's slot as taken. Rule 7
+  applies: it's never moved once the players have been told. If no judge
+  is free at that time, the slot is still fixed and the admin is asked to
+  assign one.
+  - TODO (later): admins will be able to move and delete scheduled slots,
+    telling the players affected. Not built in version 1.
+- **Rated** (Decided): like every match we schedule. There's no cap on
+  rated matches between the same two players.
+- **Pulling out.** Either player can withdraw before both have paid; anyone
+  who already paid is refunded. After the match is fixed, the normal refund
+  policy applies (open question 2), and a no-show gives the other player a
+  walkover.
+
+**Statuses:** `pending` → `accepted` → `scheduled`, or it ends as
+`declined`, `withdrawn`, `expired` or `failed` (payment not completed, the
+event cancelled, or no slot left).
+
+---
+
+## 13. Search: usernames and venues (Proposed)
+
+One search behaviour for players (challenges, adding judges, the walk-in
+desk) and later venues.
+
+**Ranking.** Results come back in tiers, best first:
+
+| Tier | Rule | Example for "ash" |
+| --- | --- | --- |
+| 1. Exact | The username is exactly the query | `ash` |
+| 2. Prefix | The username starts with the query | `asha_rao` |
+| 3. Contains | The query appears inside the username | `prakash` |
+| 4. Fuzzy | Similar spelling | `aash` |
+
+Within a tier: closest similarity first, then shorter names, then
+alphabetical. For venues, distance breaks ties within a tier.
+
+**Backend:**
+
+- Tiers 1–3 run first. Fuzzy matches are added only when they return fewer
+  than about 5 results, and only for queries of 3 or more characters;
+  fuzzy matching on one or two letters is noise.
+- Fuzzy matching uses Postgres's `pg_trgm` extension (Neon supports it). A
+  trigram GIN index on `lower(username)` serves both the "contains" and
+  fuzzy tiers.
+- Escape `_`, `%` and `\` in the query before using it in `LIKE`.
+  Otherwise "a_b" matches "axb", and `_` is common in usernames.
+- Results carry only public fields: name, @username and rating, never phone
+  numbers. They leave out the searcher, incomplete profiles and (later)
+  people who blocked them. The endpoint needs a session and is
+  rate-limited, so it can't be used to list every user.
+
+**Frontend:**
+
+- Search about 250 ms after typing stops.
+- Cancel the previous request when a new one starts (`AbortController`),
+  and ignore responses that arrive out of order.
+- Strip a leading `@` and lowercase the query.
+- Bold the matched part of each result.
+- Show clear loading, empty and error states.
+
+---
+
+## 14. Future: matches with no event
+
+These are everyday rated matches with no event at all: two players arrange
+a game themselves, anywhere.
 
 The model above already allows them (`matches.event_id` is null). When
 building them, decide:
 
 - how results are confirmed without a judge (likely: one player enters the
   score, the other confirms);
-- who books the court;
-- limits on how often the same two players can play rated matches
-  (anti-boosting).
+- who books the court.
+
+Every scheduled match is rated (Decided), so these are too.
 
 ---
 
-## 13. Build order
+## 15. Build order
 
 1. **Done:** venues, courts and events; public `GET /api/events` and
    `/api/events/{id}`; the `-seed-demo` command.
 2. **Done:** Elo band, formats, slot lengths, `max_matches` and the
    registration cutoff on events; distance search on `/api/events`.
-3. Admin endpoints and the admin-mode toggle: venues, courts, events,
-   judges.
-4. Registrations with holds and the capacity check, plus the event
-   details and join screens.
+3. **Done:** admin endpoints and the admin-mode toggle: venues, courts,
+   events (draft → publish → cancel), judges. Migration `000006` adds
+   `event_judges` and `events.created_by`.
+4. Entries (open, one per match) with holds and the capacity check, plus
+   the event details and join screens. The username search (section 13) and the
+   court double-booking check (section 10).
 5. The payment adapter (Razorpay) and webhooks, with a fake provider for
    local development, the same way OTP has a console provider.
 6. Player ratings (starting at 1200), matches, and the matching algorithm,
    with its preview and publish steps.
-7. Live scoring: the judge console, the point log and server-sent events.
-8. Rating updates, the result screen and the leaderboard.
-9. Walk-ins: QR self-join, the desk, standby and the live queue.
-10. Notifications beyond in-app.
+7. Challenges (section 12): request, accept, both pay, fixed slot.
+8. Live scoring: the judge console, the point log and server-sent events.
+9. Rating updates, the result screen and the leaderboard.
+10. Walk-ins: QR self-join, the desk with account lookup, the player-card
+    QR, standby and the live queue.
+11. Notifications beyond in-app.
 
 ---
 
-## 14. Open questions
+## 16. Open questions
 
 | # | Question | Default if unanswered |
 | --- | --- | --- |
-| 1 | How many matches does the ₹50 fee guarantee? | 1 guaranteed; more if slots are free |
-| 2 | Refund policy: unmatched players, cancellations, and how late a player can cancel | Unmatched players are refunded automatically; no refund within 24 h of the event |
-| 3 | When does registration close before the event? | 2 hours before the start |
+| 1 | ~~How many matches does the ₹50 fee buy?~~ | Decided: one entry is one match; more matches mean more entries (section 5) |
+| 2 | Refund policy: unmatched entries, cancellations, and how late a player can cancel | Unmatched entries are refunded automatically; no refund within 24 h of the event |
+| 3 | When does joining close before the event? | 2 hours before the start |
 | 4 | Slot length per format | 30 min singles; 40 min doubles and mixed |
 | 5 | Largest rating gap allowed in a match | About 200, with closer matches preferred |
 | 6 | ~~Starting rating~~ | Decided: 1200 for everyone (section 9) |
@@ -478,3 +680,8 @@ building them, decide:
 | 10 | Does a walkover change ratings? | No |
 | 11 | Payment provider | Razorpay |
 | 12 | Notification channels after in-app | WhatsApp, then SMS |
+| 13 | A challenge where only one player pays: refund, or turn their entry into an open one? | Refund automatically |
+| 14 | How long do both players have to pay after a challenge is accepted? | 2 hours, and before the registration cutoff |
+| 15 | ~~Rated challenges between the same two players~~ | Decided: every scheduled match is rated, with no cap |
+| 16 | ~~Doubles and mixed challenges~~ | Decided: singles only in version 1 |
+| 17 | Most entries one player can hold in one event | 3 |
