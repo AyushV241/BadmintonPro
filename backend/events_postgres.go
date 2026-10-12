@@ -9,23 +9,34 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// eventColumns is an events row joined to its venue, aliased e and v.
-// scanEvent reads them in this order.
+// eventColumns is an events row joined to its venue, aliased e and v, plus
+// how many live entries it has (see liveEntriesSQL). scanEvent reads them in
+// this order.
 const eventColumns = `e.id, e.title, e.formats,
 	e.singles_slot_minutes, e.doubles_slot_minutes, e.mixed_slot_minutes,
 	e.status, e.starts_at, e.ends_at, e.registration_closes_at,
 	e.fee_paise, e.currency, e.capacity, e.max_matches, e.rating_min, e.rating_max,
-	v.id, v.name, v.address, v.city, v.lat, v.lng, v.timezone`
+	v.id, v.name, v.address, v.city, v.lat, v.lng, v.timezone, ` + liveEntriesSQL
+
+// liveEntriesSQL counts the event e's entries that hold a place: confirmed,
+// standby or scheduled, or waiting for payment with an unexpired hold. It is
+// the same rule CreateEntry enforces, against the database clock here
+// because a read has no "now" of its own.
+const liveEntriesSQL = `(SELECT count(*) FROM entries en
+	WHERE en.event_id = e.id
+	  AND (en.status IN ('confirmed', 'standby', 'scheduled')
+	       OR (en.status = 'pending_payment' AND en.hold_expires_at > now())))`
 
 // scanEvent reads eventColumns, then any extra columns into extra.
 func scanEvent(row pgx.Row, extra ...any) (Event, error) {
 	var e Event
-	var singles, doubles, mixed int
+	var singles, doubles, mixed, live int
 	dest := append([]any{&e.ID, &e.Title, &e.Formats,
 		&singles, &doubles, &mixed,
 		&e.Status, &e.StartsAt, &e.EndsAt, &e.RegistrationClosesAt,
 		&e.FeePaise, &e.Currency, &e.Capacity, &e.MaxMatches, &e.RatingMin, &e.RatingMax,
 		&e.Venue.ID, &e.Venue.Name, &e.Venue.Address, &e.Venue.City, &e.Venue.Lat, &e.Venue.Lng, &e.Venue.Timezone,
+		&live,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return Event{}, err
@@ -37,8 +48,8 @@ func scanEvent(row pgx.Row, extra ...any) (Event, error) {
 	for _, f := range e.Formats {
 		e.SlotMinutes[f] = slot[f]
 	}
-	// No registrations yet, so every place is free.
-	e.SpotsLeft = e.Capacity
+	// Each live entry needs half a match, so MaxMatches caps entries too.
+	e.SpotsLeft = max(0, min(e.Capacity, 2*e.MaxMatches)-live)
 	return e, nil
 }
 

@@ -206,6 +206,117 @@ export type BadmintonEvent = {
   courts?: Court[];
 };
 
+/** Where to look: a point and radius when the browser shares location, else a city. */
+export type EventQuery = { lat: number; lng: number; radiusKm?: number } | { city: string };
+
+/** Published, upcoming events in start order. Public: no session needed. */
+export async function listEvents(query: EventQuery, limit = 20): Promise<BadmintonEvent[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const { events } = await request<{ events: BadmintonEvent[] }>(`/api/events?${params}`);
+  return events;
+}
+
+export async function getEvent(id: string): Promise<BadmintonEvent> {
+  const { event } = await request<{ event: BadmintonEvent }>(`/api/events/${encodeURIComponent(id)}`);
+  return event;
+}
+
+// --- Entries ----------------------------------------------------------------
+// One entry is one paid match in an event's pool.
+
+/** What other players may see of someone. */
+export type PublicUser = { id: string; username: string; name: string };
+
+export type EntryStatus =
+  | "pending_payment"
+  | "confirmed"
+  | "standby"
+  | "scheduled"
+  | "cancelled"
+  | "refunded"
+  | "no_show";
+
+export type Entry = {
+  id: string;
+  /** "open": the matcher picks the opponent; "locked": a challenge fixed it. */
+  kind: "open" | "locked";
+  formats: EventFormat[];
+  partner: PublicUser | null;
+  source: "online" | "walk_in";
+  status: EntryStatus;
+  /** While pending payment: when the held spot is released. */
+  holdExpiresAt: string | null;
+  holdExpired: boolean;
+  createdAt: string;
+  event: Pick<
+    BadmintonEvent,
+    "id" | "title" | "status" | "startsAt" | "endsAt" | "registrationClosesAt" | "feePaise" | "currency" | "venue"
+  >;
+};
+
+/** Holds a spot for 10 minutes while the player pays. */
+export async function createEntry(eventId: string, formats: EventFormat[], partnerUsername?: string): Promise<Entry> {
+  const { entry } = await request<{ entry: Entry }>(`/api/events/${encodeURIComponent(eventId)}/entries`, {
+    method: "POST",
+    body: JSON.stringify(partnerUsername ? { formats, partnerUsername } : { formats }),
+  });
+  return entry;
+}
+
+/** The signed-in player's entries, newest first. */
+export async function myEntries(): Promise<Entry[]> {
+  const { entries } = await request<{ entries: Entry[] }>("/api/me/entries");
+  return entries;
+}
+
+/** Releases an entry that hasn't been paid for. */
+export async function cancelEntry(id: string): Promise<Entry> {
+  const { entry } = await request<{ entry: Entry }>(`/api/me/entries/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return entry;
+}
+
+/** Players by username: exact, then starts-with, then contains, then similar. */
+export async function searchUsers(q: string, signal?: AbortSignal): Promise<PublicUser[]> {
+  const { users } = await request<{ users: PublicUser[] }>(`/api/users/search?q=${encodeURIComponent(q)}`, {
+    signal,
+  });
+  return users;
+}
+
+// --- Matches ----------------------------------------------------------------
+
+export type MatchStatus = "scheduled" | "ready" | "live" | "completed" | "walkover" | "cancelled";
+
+export type MatchPlayer = { userId: string; name: string; username: string; rating: number };
+export type MatchSide = { side: "A" | "B"; players: MatchPlayer[]; rating: number };
+
+/** One of the signed-in player's matches. */
+export type MyMatch = {
+  id: string;
+  status: MatchStatus;
+  format: EventFormat;
+  event: { id: string; title: string } | null;
+  venue: Venue;
+  court: Court;
+  startsAt: string;
+  endsAt: string;
+  judge: Judge | null;
+  sides: MatchSide[];
+  mySide: "A" | "B";
+  winnerSide: "A" | "B" | null;
+};
+
+/** The signed-in player's matches, soonest first. */
+export async function myMatches(): Promise<MyMatch[]> {
+  const { matches } = await request<{ matches: MyMatch[] }>("/api/me/matches");
+  return matches;
+}
+
 // --- Admin mode -------------------------------------------------------------
 // Every /api/admin call needs a session. Admin mode is open to every
 // signed-in user for now; later only people with the role.
@@ -316,4 +427,91 @@ export function adminRemoveJudge(eventId: string, userId: string): Promise<void>
     `/api/admin/events/${encodeURIComponent(eventId)}/judges/${encodeURIComponent(userId)}`,
     { method: "DELETE" },
   );
+}
+
+// Schedule: the matcher's proposal for an event, then the published matches.
+
+export type ScheduledMatch = {
+  /** Null in a preview; set once published. */
+  id: string | null;
+  format: EventFormat;
+  court: Court;
+  startsAt: string;
+  endsAt: string;
+  judge: Judge | null;
+  sides: { side: "A" | "B"; players: (MatchPlayer & { entryId: string })[]; rating: number }[];
+  /** E.g. "rating gap 240", "no judge", "gender balance not checked". */
+  flags: string[];
+};
+
+export type Schedule = {
+  eventId: string;
+  publishedAt: string | null;
+  matches: ScheduledMatch[];
+  standby: { entryId: string; user: PublicUser; reason: string }[];
+  warnings: string[];
+};
+
+/** The published schedule, or null while it isn't published. */
+export async function adminGetSchedule(eventId: string): Promise<Schedule | null> {
+  try {
+    const { schedule } = await request<{ schedule: Schedule }>(`/api/admin/events/${encodeURIComponent(eventId)}/schedule`);
+    return schedule;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404 && err.message.includes("isn't published")) return null;
+    throw err;
+  }
+}
+
+/** What the matcher would do now. Saves nothing. */
+export async function adminPreviewSchedule(eventId: string): Promise<Schedule> {
+  const { schedule } = await request<{ schedule: Schedule }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/schedule/preview`,
+    { method: "POST" },
+  );
+  return schedule;
+}
+
+/** Runs the matcher again and saves the matches. Only once per event for now. */
+export async function adminPublishSchedule(eventId: string): Promise<Schedule> {
+  const { schedule } = await request<{ schedule: Schedule }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/schedule/publish`,
+    { method: "POST" },
+  );
+  return schedule;
+}
+
+export type AdminEntry = {
+  id: string;
+  user: PublicUser;
+  ratings: Partial<Record<EventFormat, number>>;
+  kind: "open" | "locked";
+  formats: EventFormat[];
+  partner: PublicUser | null;
+  source: "online" | "walk_in";
+  status: EntryStatus;
+  holdExpiresAt: string | null;
+  holdExpired: boolean;
+  matchId: string | null;
+  standbyReason: string | null;
+  confirmedBy: PublicUser | null;
+  confirmedAt: string | null;
+  createdAt: string;
+};
+
+/** An event's entries in join order. */
+export async function adminListEntries(eventId: string): Promise<AdminEntry[]> {
+  const { entries } = await request<{ entries: AdminEntry[] }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/entries`,
+  );
+  return entries;
+}
+
+/** Records a cash or UPI payment taken at the desk. */
+export async function adminMarkPaid(entryId: string): Promise<AdminEntry> {
+  const { entry } = await request<{ entry: AdminEntry }>(
+    `/api/admin/entries/${encodeURIComponent(entryId)}/mark-paid`,
+    { method: "POST" },
+  );
+  return entry;
 }

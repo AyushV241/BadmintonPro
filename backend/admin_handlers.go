@@ -51,6 +51,14 @@ func (a *API) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/events/{id}/cancel", a.adminRoute(a.handleAdminCancelEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/judges", a.adminRoute(a.handleAdminAddJudge))
 	mux.HandleFunc("DELETE /api/admin/events/{id}/judges/{userId}", a.adminRoute(a.handleAdminRemoveJudge))
+
+	if a.matches != nil {
+		mux.HandleFunc("GET /api/admin/events/{id}/entries", a.adminRoute(a.handleAdminListEventEntries))
+		mux.HandleFunc("GET /api/admin/events/{id}/schedule", a.adminRoute(a.handleAdminGetSchedule))
+		mux.HandleFunc("POST /api/admin/events/{id}/schedule/preview", a.adminRoute(a.handleAdminPreviewSchedule))
+		mux.HandleFunc("POST /api/admin/events/{id}/schedule/publish", a.adminRoute(a.handleAdminPublishSchedule))
+		mux.HandleFunc("POST /api/admin/entries/{id}/mark-paid", a.adminRoute(a.handleAdminMarkEntryPaid))
+	}
 }
 
 type venuesResponse struct {
@@ -77,7 +85,10 @@ type judgeResponse struct {
 // writeAdminError maps store and validation errors to responses; anything
 // unexpected is logged and becomes a 500.
 func writeAdminError(w http.ResponseWriter, err error, action string) {
+	var busy *CourtBusyError
 	switch {
+	case errors.As(err, &busy):
+		writeError(w, http.StatusConflict, busy.Error())
 	case errors.Is(err, errValidation):
 		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), errValidation.Error()+": "))
 	case errors.Is(err, ErrNoSuchEvent):

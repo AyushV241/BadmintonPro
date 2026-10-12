@@ -361,3 +361,123 @@ func TestAdminFlow(t *testing.T) {
 		t.Errorf("venues = %+v", venues.Venues)
 	}
 }
+
+// Two events that aren't cancelled can't use one court at overlapping times
+// (design doc, section 10).
+func TestCourtDoubleBooking(t *testing.T) {
+	store := eventsTestStore(t)
+	ctx := context.Background()
+	if _, err := store.pool.Exec(ctx, `TRUNCATE users, sessions, user_identities, event_judges CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewAPI(store, oauth.NewRegistry(), nil, false).WithEvents(store).WithAdmin(store).Routes())
+	t.Cleanup(srv.Close)
+	cookie, _ := signIn(t, store, "+919800000001")
+	api := adminClient{t: t, srv: srv, cookie: cookie}
+
+	venue, err := store.CreateVenue(ctx, VenueInput{Name: "Arena", City: "bangalore", Timezone: demoTimezone, Courts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1, c2, c3 := venue.Courts[0].ID, venue.Courts[1].ID, venue.Courts[2].ID
+	date := time.Now().In(mustLoad(demoTimezone)).AddDate(0, 0, 7).Format("2006-01-02")
+	body := func(title, start, end string, courts ...string) map[string]any {
+		return map[string]any{
+			"venueId": venue.ID, "title": title, "formats": []string{"singles"},
+			"date": date, "startTime": start, "endTime": end,
+			"feePaise": 5000, "capacity": 8, "maxMatches": 1, "courtIds": courts,
+		}
+	}
+	// save creates (id "") or updates an event and returns the status code,
+	// the error message on a 409, and the event's ID.
+	save := func(id string, b map[string]any) (int, string, string) {
+		t.Helper()
+		method, path := "POST", "/api/admin/events"
+		if id != "" {
+			method, path = "PUT", "/api/admin/events/"+id
+		}
+		var buf bytes.Buffer
+		_ = json.NewEncoder(&buf).Encode(b)
+		req, _ := http.NewRequest(method, srv.URL+path, &buf)
+		req.AddCookie(cookie)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var out struct {
+			adminEventResponse
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out.Error, out.Event.ID
+	}
+
+	code, _, a := save("", body("Evening A", "19:00", "21:00", c1, c2))
+	if code != http.StatusCreated {
+		t.Fatalf("A: %d", code)
+	}
+
+	// Overlapping on court 2: refused, naming the court and the other event.
+	code, msg, _ := save("", body("Clash", "20:00", "22:00", c2, c3))
+	if code != http.StatusConflict || !strings.Contains(msg, "Court 2") || !strings.Contains(msg, `"Evening A"`) {
+		t.Errorf("overlap on create: %d %q", code, msg)
+	}
+
+	// Touching end to end is fine, before and after; so is another court.
+	if code, msg, _ := save("", body("Late", "21:00", "23:00", c2)); code != http.StatusCreated {
+		t.Errorf("starting as A ends: %d %q", code, msg)
+	}
+	if code, msg, _ := save("", body("Early", "18:00", "19:00", c1)); code != http.StatusCreated {
+		t.Errorf("ending as A starts: %d %q", code, msg)
+	}
+	code, _, e := save("", body("Side court", "19:30", "20:30", c3))
+	if code != http.StatusCreated {
+		t.Fatalf("other court: %d", code)
+	}
+
+	// Updating onto a busy court is refused; an event never clashes with
+	// itself.
+	if code, msg, _ := save(e, body("Side court", "19:30", "20:30", c1)); code != http.StatusConflict || !strings.Contains(msg, "Court 1") {
+		t.Errorf("overlap on update: %d %q", code, msg)
+	}
+	if code, msg, _ := save(e, body("Side court, renamed", "19:30", "20:30", c3)); code != http.StatusOK {
+		t.Errorf("updating in place: %d %q", code, msg)
+	}
+
+	// A cancelled event frees its courts.
+	if code := api.do("POST", "/api/admin/events/"+a+"/cancel", nil, nil); code != http.StatusOK {
+		t.Fatalf("cancel A: %d", code)
+	}
+	if code, msg, _ := save("", body("Evening B", "19:00", "21:00", c1, c2)); code != http.StatusCreated {
+		t.Errorf("after A was cancelled: %d %q", code, msg)
+	}
+
+	// Publishing checks again: a clash written around the API (here, plain
+	// SQL) can't go live.
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO events (id, venue_id, title, formats, starts_at, ends_at, registration_closes_at, fee_paise, capacity, max_matches)
+		SELECT 'evt_t_sneaky', venue_id, 'Sneaky', formats, starts_at + interval '30 minutes', ends_at, registration_closes_at, 5000, 8, 1
+		FROM events WHERE id = $1`, e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO event_courts (event_id, court_id, venue_id) VALUES ('evt_t_sneaky', $1, $2)`, c3, venue.ID); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/events/evt_t_sneaky/publish", nil)
+	req.AddCookie(cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out errorResponse
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusConflict || !strings.Contains(out.Error, "Court 3") || !strings.Contains(out.Error, "Side court, renamed") {
+		t.Errorf("publish over a clash: %d %q", res.StatusCode, out.Error)
+	}
+	var status string
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM events WHERE id = 'evt_t_sneaky'`).Scan(&status); err != nil || status != EventDraft {
+		t.Errorf("status after refused publish = %q, %v", status, err)
+	}
+}

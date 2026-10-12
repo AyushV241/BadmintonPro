@@ -15,8 +15,16 @@ type API struct {
 	events EventStore
 	// admin is nil without a database too; the /api/admin routes then
 	// aren't registered.
-	admin     AdminStore
-	providers *oauth.Registry
+	admin AdminStore
+	// entries and users are nil without a database too; joining and
+	// username search are then not registered.
+	entries EntryStore
+	users   UserSearchStore
+	// matches is nil without a database too; the schedule, desk and
+	// player-match routes are then not registered.
+	matches     MatchStore
+	searchLimit *limiter
+	providers   *oauth.Registry
 	// phone is nil when phone login is disabled.
 	phone *PhoneLogin
 	// cookieSecure marks cookies Secure. It must be true anywhere served over
@@ -38,6 +46,28 @@ func (a *API) WithEvents(events EventStore) *API {
 // WithAdmin enables admin mode's endpoints. They need WithEvents too.
 func (a *API) WithAdmin(admin AdminStore) *API {
 	a.admin = admin
+	return a
+}
+
+// WithEntries enables joining events and listing and cancelling your
+// entries. They need WithEvents too.
+func (a *API) WithEntries(entries EntryStore) *API {
+	a.entries = entries
+	return a
+}
+
+// WithMatches enables the schedule (preview and publish), the admin's entry
+// list and offline payments, and a player's own matches. The admin routes
+// need WithEvents and WithAdmin too.
+func (a *API) WithMatches(matches MatchStore) *API {
+	a.matches = matches
+	return a
+}
+
+// WithUserSearch enables username search.
+func (a *API) WithUserSearch(users UserSearchStore) *API {
+	a.users = users
+	a.searchLimit = newSearchLimiter()
 	return a
 }
 
@@ -74,6 +104,19 @@ func (a *API) Routes() http.Handler {
 	}
 	if a.events != nil && a.admin != nil {
 		a.registerAdminRoutes(mux)
+	}
+	// Signed in. Cancelling is a DELETE that keeps the row: entries are never
+	// deleted, only moved to cancelled.
+	if a.events != nil && a.entries != nil {
+		mux.HandleFunc("POST /api/events/{id}/entries", a.handleCreateEntry)
+		mux.HandleFunc("GET /api/me/entries", a.handleListMyEntries)
+		mux.HandleFunc("DELETE /api/me/entries/{id}", a.handleCancelEntry)
+	}
+	if a.matches != nil {
+		mux.HandleFunc("GET /api/me/matches", a.handleListMyMatches)
+	}
+	if a.users != nil {
+		mux.HandleFunc("GET /api/users/search", a.handleSearchUsers)
 	}
 	return mux
 }

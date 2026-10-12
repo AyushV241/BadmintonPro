@@ -211,7 +211,7 @@ skips anything already done.
 ### Demo data
 
 ```bash
-go run . -seed-demo    # three Bangalore venues with courts, and events in the coming week
+go run . -seed-demo    # three Bangalore venues with courts, events in the coming week, and 16 demo players with paid entries in "Midweek Rally Night"
 ```
 
 It rewrites the same rows each time and moves the events to the next matching
@@ -249,19 +249,29 @@ mode**; it will check roles later (see the design doc, section 10).
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
 | `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` if the OTP provider refuses as too many. Only when `OTP_PROVIDER` is set |
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
-| `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city. `?lat=&lng=&radiusKm=` keeps venues within that distance (default 10 km, at most 100) and adds `distanceKm` to each event; venues without coordinates drop out. `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Each event has its `formats`, `slotMinutes` per format, `feePaise`, `capacity`, `maxMatches`, `registrationClosesAt` and an optional Elo band (`ratingMin`/`ratingMax`). Public: it says nothing about who joined |
+| `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city. `?lat=&lng=&radiusKm=` keeps venues within that distance (default 10 km, at most 100) and adds `distanceKm` to each event; venues without coordinates drop out. `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Each event has its `formats`, `slotMinutes` per format, `feePaise`, `capacity`, `maxMatches`, `spotsLeft` (capacity minus live entries), `registrationClosesAt` and an optional Elo band (`ratingMin`/`ratingMax`). Public: it says nothing about who joined |
 | `GET` | `/api/events/{id}` | — | One event with its venue and courts. Drafts are `404`; cancelled and completed events stay visible |
+| `POST` | `/api/events/{id}/entries` | cookie | `{"formats":["singles","doubles"],"partnerUsername"?:"@asha"}`: joins with an **open entry** (one match), `201 {"entry"}` as `pending_payment` with a 10-minute `holdExpiresAt`. A partner only with doubles or mixed. `400` bad formats or partner, `403` profile not set up, `404` unknown event, draft or partner, `409` closed, cancelled, outside the Elo band, already 3 entries, full, or no matches left. Nothing confirms entries until payments exist |
+| `GET` | `/api/me/entries` | cookie | `{"entries":[…]}`, newest first. Each entry: `id`, `kind`, `formats`, `partner` (`{"id","username","name"}` or `null`), `source`, `status`, `holdExpiresAt`, `holdExpired` (an unpaid entry whose hold ran out; it no longer counts), `createdAt`, and `event` (`id`, `title`, `status`, times, `feePaise`, `currency`, `venue`) |
+| `DELETE` | `/api/me/entries/{id}` | cookie | Cancels your own `pending_payment` entry: `200 {"entry"}` with `status: "cancelled"`; the row is kept. `404` if it isn't yours, `409` once paid or already cancelled |
+| `GET` | `/api/me/matches` | cookie | `{"matches":[…]}`, soonest first, every status. Each: `id`, `status`, `format`, `event` (`{"id","title"}`, `null` without one), `venue`, `court` (`{"id","label"}`), `startsAt`, `endsAt`, `judge` (`{"userId","name","username"}` or `null`), `sides` (`[{"side":"A","players":[{"userId","name","username","rating"}],"rating"}]`, ratings current, side rating the average), `mySide` and `winnerSide` |
+| `GET` | `/api/users/search?q=` | cookie | `{"users":[{"id","username","name"}]}`, at most 20: exact, prefix, then contains matches, plus fuzzy ones when fewer than 5 and `q` has 3+ characters. `q` ignores case and a leading `@`; empty gives `[]`. Leaves out you and incomplete profiles, never shows phone or email. 30 searches a minute per user, then `429` with `Retry-After` |
 | `GET` | `/api/admin/venues` | admin | Every venue with its courts |
 | `POST` | `/api/admin/venues` | admin | `{"name","address","city","lat"?,"lng"?,"timezone"?,"courts"}`: creates a venue and `courts` courts named "Court 1" … "Court n". Time zone defaults to `Asia/Kolkata` |
 | `POST` | `/api/admin/venues/{id}/courts` | admin | `{"label"}`: adds a court. `409` if the venue already has that label |
 | `GET` | `/api/admin/events` | admin | Events in every status, latest first; `?status=draft` and so on to filter |
-| `POST` | `/api/admin/events` | admin | Creates a **draft**: `{"venueId","title","formats","slotMinutes"?,"date":"2026-10-17","startTime":"19:30","endTime":"22:30","registrationClosesMinutesBefore"?,"feePaise","capacity","maxMatches","ratingMin"?,"ratingMax"?,"courtIds"}`. Times are the venue's local times; `maxMatches` can't exceed whole slots on the chosen courts. `400` with a message on invalid input |
+| `POST` | `/api/admin/events` | admin | Creates a **draft**: `{"venueId","title","formats","slotMinutes"?,"date":"2026-10-17","startTime":"19:30","endTime":"22:30","registrationClosesMinutesBefore"?,"feePaise","capacity","maxMatches","ratingMin"?,"ratingMax"?,"courtIds"}`. Times are the venue's local times; `maxMatches` can't exceed whole slots on the chosen courts. `400` with a message on invalid input; `409` naming the court and event if another event that isn't cancelled uses one of the courts at an overlapping time (also checked on update and publish) |
 | `GET` | `/api/admin/events/{id}` | admin | `{"event","judges"}`, drafts included |
 | `PUT` | `/api/admin/events/{id}` | admin | Same body as create. Drafts only: `409` once published |
 | `POST` | `/api/admin/events/{id}/publish` | admin | Draft → published (players can see it). `409` from any other status or once the start has passed |
 | `POST` | `/api/admin/events/{id}/cancel` | admin | Draft or published → cancelled. Events are never deleted |
 | `POST` | `/api/admin/events/{id}/judges` | admin | `{"username"}` (any case, `@` optional): adds a judge. `404` if no one has that username |
 | `DELETE` | `/api/admin/events/{id}/judges/{userId}` | admin | Removes a judge |
+| `GET` | `/api/admin/events/{id}/entries` | admin | `{"entries":[…]}`, every status, in join order. Each: `id`, `user` (`{"id","username","name"}`), `ratings` (per format of the entry), `kind`, `formats`, `partner`, `source`, `status`, `holdExpiresAt`, `holdExpired`, `matchId`, `standbyReason`, `confirmedBy` (the admin, or `null`), `confirmedAt`, `createdAt` |
+| `POST` | `/api/admin/entries/{id}/mark-paid` | admin | Stopgap for the desk's offline payment until payments exist (step 5 confirms online entries from the webhook): `pending_payment` → `confirmed`, recording who and when, `200 {"entry"}`. An expired hold is fine if the event still has room (capacity, `maxMatches`, 3 per player, checked under the event lock); the registration cutoff doesn't apply. `404` unknown, `409` not pending, event not published or over, or no room |
+| `GET` | `/api/admin/events/{id}/schedule` | admin | The published schedule as saved, in the same shape as the preview, with each player's current rating and the flags worked out again. `404` until it's published, or for an unknown event |
+| `POST` | `/api/admin/events/{id}/schedule/preview` | admin | Runs the matcher on the confirmed open entries and returns `{"schedule"}` without saving: `eventId`, `publishedAt`, `matches` (`id` (`null` in a preview), `format`, `court` `{"id","label"}`, `startsAt`, `endsAt`, `judge` or `null`, `sides` `[{"side","players":[{"userId","name","username","rating","entryId"}],"rating"}]`, `flags` such as `"rating gap 240"`, `"gender balance not checked"`, `"no judge"`), `standby` (`[{"entryId","user","reason"}]`, reason `"no opponent"`, `"no free slot"` or `"format not offered"`) and `warnings` (strings). `404` unknown event |
+| `POST` | `/api/admin/events/{id}/schedule/publish` | admin | Same, in one transaction with the event locked, and saves it: matches and sides, entries to `scheduled` (with `matchId`) or `standby` (with the reason), the publish time. `201 {"schedule"}` with match IDs. Published events only; once per event in version 1. `409` not published, already published, or the entries make no match |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
 
@@ -367,6 +377,7 @@ ones, and variables already set in the shell win over both:
 | Variable | Description | Default |
 | --- | --- | --- |
 | `BACKEND_URL` | Where the dev server proxies `/api/*`. Server-side only | `http://localhost:8080` |
+| `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY` | Optional. A Google Maps Embed API key for the venue maps; without one they use Google's keyless embed. Restrict the key to your site's domains, since it is visible in the browser | unset |
 
 ## Tests
 
@@ -408,6 +419,11 @@ BadmintonPro/
 │   ├── admin.go             # admin mode: AdminStore interface, venue/event validation
 │   ├── admin_postgres.go    # admin queries
 │   ├── admin_handlers.go    # /api/admin/*, behind requireAdmin
+│   ├── entries*.go          # joining events: entries, holds, the capacity check
+│   ├── matcher.go           # the matching algorithm: a pure function, no database
+│   ├── matches*.go          # schedule preview and publish, mark-paid, a player's matches
+│   ├── search*.go           # username search (pg_trgm)
+│   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── store.go             # Store interface, hashing, IDs
 │   ├── memory_store.go      # in-memory implementation (tests)

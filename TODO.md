@@ -55,8 +55,9 @@ pumping fraud sends thousands.
 
 The working version is in git: `backend/ratelimit.go` and
 `ratelimit_test.go`, and the limits in `phone_handlers.go`, as of commit
-`1fa9ccc` (they were first added in `755e31f`). Restoring it is mostly
-`git checkout 1fa9ccc -- backend/ratelimit.go backend/ratelimit_test.go`
+`1fa9ccc` (they were first added in `755e31f`). The limiter itself is back
+in `backend/ratelimit.go`, for username search, without `clientIP`.
+Restoring the rest is mostly `git checkout 1fa9ccc -- backend/ratelimit.go backend/ratelimit_test.go`
 plus re-adding the checks in `sendCode`/`checkCode`, `NewPhoneLogin`'s
 parameters and the config below.
 

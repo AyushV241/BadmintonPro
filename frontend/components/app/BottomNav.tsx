@@ -14,7 +14,7 @@ type Tab = {
 
 const TABS: Tab[] = [
   { key: "home", label: "Home", Icon: HomeIcon, href: "/dashboard" },
-  { key: "matches", label: "Matches", Icon: MatchesIcon },
+  { key: "matches", label: "Matches", Icon: MatchesIcon, href: "/matches" },
   { key: "rank", label: "Rank", Icon: TrophyIcon },
   { key: "profile", label: "Profile", Icon: UserIcon },
 ];

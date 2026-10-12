@@ -46,3 +46,26 @@ export function maxMatchesFor(courts: number, startTime: string, endTime: string
   if (!Number.isFinite(shortest) || length <= 0) return 0;
   return courts * Math.floor(length / shortest);
 }
+
+/** { weekday: "Sat", day: "10", month: "Oct" }, for date tiles. */
+export function dateTile(iso: string, timeZone: string) {
+  const get = parts(iso, timeZone, { weekday: "short", day: "numeric", month: "short" });
+  return { weekday: get("weekday"), day: get("day"), month: get("month") };
+}
+
+/** "7:30 PM" */
+export function clockTime(iso: string, timeZone: string) {
+  // Some ICU versions put a narrow no-break space before AM/PM.
+  return new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit" })
+    .format(new Date(iso))
+    .replace(/\s/g, " ");
+}
+
+/** "Sat 10 Oct · 7:30–10:30 PM" (both ends share the day: events never cross midnight). */
+export function formatWindow(startIso: string, endIso: string, timeZone: string) {
+  const start = clockTime(startIso, timeZone);
+  const end = clockTime(endIso, timeZone);
+  const [startClock, startPeriod] = start.split(" ");
+  const range = end.endsWith(startPeriod) ? `${startClock}–${end}` : `${start}–${end}`;
+  return `${formatWhen(startIso, timeZone).split(" · ")[0]} · ${range}`;
+}

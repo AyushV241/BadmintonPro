@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -185,12 +187,49 @@ func insertEventCourts(ctx context.Context, tx pgx.Tx, eventID string, in EventI
 	return nil
 }
 
+// checkCourtsFree returns a *CourtBusyError if an event other than eventID
+// that isn't cancelled (drafts included) uses one of courtIDs at a time
+// overlapping [startsAt, endsAt). Events that only touch, one ending as the
+// next starts, don't overlap.
+//
+// It locks the court rows first, in ID order so two saves can't deadlock.
+// Two events saved at once on the same court then take turns, and the second
+// sees the first. Callers that also lock an events row lock it before this.
+func checkCourtsFree(ctx context.Context, tx pgx.Tx, eventID string, courtIDs []string, startsAt, endsAt time.Time) error {
+	if _, err := tx.Exec(ctx, `SELECT id FROM courts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, courtIDs); err != nil {
+		return fmt.Errorf("lock courts: %w", err)
+	}
+
+	var clash CourtBusyError
+	err := tx.QueryRow(ctx, `
+		SELECT c.label, e.title
+		FROM event_courts ec
+		JOIN events e ON e.id = ec.event_id
+		JOIN courts c ON c.id = ec.court_id
+		WHERE ec.court_id = ANY($1)
+		  AND e.id <> $2
+		  AND e.status <> 'cancelled'
+		  AND e.starts_at < $4 AND e.ends_at > $3
+		ORDER BY e.starts_at, length(c.label), c.label
+		LIMIT 1`, courtIDs, eventID, startsAt, endsAt).Scan(&clash.Court, &clash.Event)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("court overlap: %w", err)
+	}
+	return &clash
+}
+
 func (s *PostgresStore) CreateEvent(ctx context.Context, in EventInput, createdBy string) (string, error) {
 	id, err := newID("evt")
 	if err != nil {
 		return "", err
 	}
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := checkCourtsFree(ctx, tx, id, in.CourtIDs, in.StartsAt, in.EndsAt); err != nil {
+			return err
+		}
 		args := append([]any{id}, eventValues(in)...)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO events (id, venue_id, title, formats,
@@ -233,6 +272,9 @@ func (s *PostgresStore) UpdateEvent(ctx context.Context, id string, in EventInpu
 		if status != EventDraft {
 			return ErrEventNotEditable
 		}
+		if err := checkCourtsFree(ctx, tx, id, in.CourtIDs, in.StartsAt, in.EndsAt); err != nil {
+			return err
+		}
 
 		// The courts go first: their keys tie them to the event's venue,
 		// which the update may change.
@@ -253,19 +295,44 @@ func (s *PostgresStore) UpdateEvent(ctx context.Context, id string, in EventInpu
 }
 
 func (s *PostgresStore) SetEventStatus(ctx context.Context, id string, from []string, to string) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE events SET status = $2, updated_at = now()
-		WHERE id = $1 AND status = ANY($3)`, id, to, from)
-	if err != nil {
-		return fmt.Errorf("set event status: %w", err)
-	}
-	if tag.RowsAffected() == 1 {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Locks the row so the status can't change between check and update.
+		var status string
+		var startsAt, endsAt time.Time
+		err := tx.QueryRow(ctx, `SELECT status, starts_at, ends_at FROM events WHERE id = $1 FOR UPDATE`, id).
+			Scan(&status, &startsAt, &endsAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNoSuchEvent
+		}
+		if err != nil {
+			return fmt.Errorf("set event status: %w", err)
+		}
+		if !slices.Contains(from, status) {
+			return ErrStatusChange
+		}
+
+		// Saving already checked the courts; checking again on publish keeps
+		// rows written some other way (SQL, older data) from going live
+		// double-booked.
+		if to == EventPublished {
+			rows, err := tx.Query(ctx, `SELECT court_id FROM event_courts WHERE event_id = $1`, id)
+			if err != nil {
+				return fmt.Errorf("event courts: %w", err)
+			}
+			courtIDs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return fmt.Errorf("event courts: %w", err)
+			}
+			if err := checkCourtsFree(ctx, tx, id, courtIDs, startsAt, endsAt); err != nil {
+				return err
+			}
+		}
+
+		if _, err := tx.Exec(ctx, `UPDATE events SET status = $2, updated_at = now() WHERE id = $1`, id, to); err != nil {
+			return fmt.Errorf("set event status: %w", err)
+		}
 		return nil
-	}
-	if _, err := statusOf(ctx, s.pool, id); err != nil {
-		return err
-	}
-	return ErrStatusChange
+	})
 }
 
 func (s *PostgresStore) ListEventJudges(ctx context.Context, eventID string) ([]Judge, error) {

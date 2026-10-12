@@ -38,7 +38,7 @@ func run() error {
 	// Demo data is written only when asked for, never on startup, for the same
 	// reason; and only to a local database unless -allow-remote says otherwise,
 	// because the repo-root .env may point DATABASE_URL at a shared one.
-	seedOnly := flag.Bool("seed-demo", false, "write demo venues and events to DATABASE_URL and exit")
+	seedOnly := flag.Bool("seed-demo", false, "write demo venues, events, players and entries to DATABASE_URL and exit")
 	allowRemote := flag.Bool("allow-remote", false, "let -seed-demo write to a database that isn't on this machine")
 	flag.Parse()
 
@@ -82,9 +82,11 @@ func run() error {
 
 	go pruneSessions(ctx, store)
 
+	api := NewAPI(store, providers, phone, cookieSecure).
+		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store)
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           NewAPI(store, providers, phone, cookieSecure).WithEvents(store).WithAdmin(store).Routes(),
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -124,7 +126,8 @@ func runSeedDemo(ctx context.Context, databaseURL string, allowRemote bool) erro
 	if err := seedDemo(ctx, store.pool, time.Now()); err != nil {
 		return fmt.Errorf("seed demo data: %w", err)
 	}
-	log.Printf("demo data written: %d venues, %d events", len(demoVenues), len(demoEvents))
+	log.Printf("demo data written: %d venues, %d events, %d players with %d entries in %s",
+		len(demoVenues), len(demoEvents), len(demoPlayers), len(demoEntries), demoEntryEvent)
 	return nil
 }
 

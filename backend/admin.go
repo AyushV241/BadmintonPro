@@ -18,8 +18,22 @@ var (
 	ErrCourtLabelTaken  = errors.New("court label taken")
 	ErrEventNotEditable = errors.New("only draft events can be edited")
 	ErrStatusChange     = errors.New("event can't move to that status")
-	errValidation       = errors.New("invalid")
+	// ErrCourtBusy is wrapped by CourtBusyError, which names the clash.
+	ErrCourtBusy  = errors.New("court already booked")
+	errValidation = errors.New("invalid")
 )
+
+// CourtBusyError says which court another event already uses at an
+// overlapping time (section 10: no double-booking our own courts).
+type CourtBusyError struct {
+	Court, Event string
+}
+
+func (e *CourtBusyError) Error() string {
+	return fmt.Sprintf("%s is already booked for %q at an overlapping time", e.Court, e.Event)
+}
+
+func (e *CourtBusyError) Is(target error) bool { return target == ErrCourtBusy }
 
 const (
 	defaultCloseMinutes  = 120
@@ -46,6 +60,26 @@ var (
 // validationError is a 400 with a message for the admin.
 func validationError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errValidation, fmt.Sprintf(format, args...))
+}
+
+// normaliseFormats puts formats in formatOrder without repeats. It is shared
+// by events (what they offer) and entries (what a player will play).
+func normaliseFormats(formats []string) ([]string, error) {
+	for _, f := range formats {
+		if !slices.Contains(formatOrder, f) {
+			return nil, validationError("unknown format %q (want singles, doubles or mixed)", f)
+		}
+	}
+	var out []string
+	for _, f := range formatOrder {
+		if slices.Contains(formats, f) {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil, validationError("pick at least one format")
+	}
+	return out, nil
 }
 
 // AdminCourt is a court as admins see it, including inactive ones.
@@ -111,6 +145,10 @@ type AdminStore interface {
 	UpdateEvent(ctx context.Context, id string, in EventInput) error
 	// SetEventStatus moves an event to `to` if its status is one of `from`.
 	// It returns ErrNoSuchEvent or ErrStatusChange.
+	//
+	// CreateEvent, UpdateEvent and publishing through SetEventStatus also
+	// return a *CourtBusyError (errors.Is ErrCourtBusy) when another event
+	// that isn't cancelled uses one of the courts at an overlapping time.
 	SetEventStatus(ctx context.Context, id string, from []string, to string) error
 
 	ListEventJudges(ctx context.Context, eventID string) ([]Judge, error)
@@ -210,19 +248,9 @@ func validateEvent(req eventRequest, venue AdminVenue, now time.Time) (EventInpu
 		return in, validationError("title is required (at most %d characters)", maxTitleLength)
 	}
 
-	// Formats, in a fixed order, without repeats.
-	for _, f := range formatOrder {
-		if slices.Contains(req.Formats, f) {
-			in.Formats = append(in.Formats, f)
-		}
-	}
-	for _, f := range req.Formats {
-		if !slices.Contains(formatOrder, f) {
-			return in, validationError("unknown format %q (want singles, doubles or mixed)", f)
-		}
-	}
-	if len(in.Formats) == 0 {
-		return in, validationError("pick at least one format")
+	var err error
+	if in.Formats, err = normaliseFormats(req.Formats); err != nil {
+		return in, err
 	}
 	for f := range req.SlotMinutes {
 		if !slices.Contains(in.Formats, f) {

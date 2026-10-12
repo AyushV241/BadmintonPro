@@ -117,8 +117,10 @@ matches separate from events so that can be added without a redesign.
    entry**. They pick:
    - **formats**: one or more of singles, doubles and mixed. The entry
      gets one match, in one of those formats;
-   - **partner**, optional, for doubles: a partner who also has an entry in
-     this event. Without one, the matcher makes the team.
+   - **partner**, optional, for doubles: a partner who already holds their
+     own live entry in this event for the same team format (Decided: every
+     player pays for their own match). Without one, the matcher makes the
+     team.
 
    To play a chosen opponent instead, they send a challenge (section 12).
 2. **The spot is held while they pay** (Proposed: for 10 minutes):
@@ -258,6 +260,44 @@ matches separate from events so that can be added without a redesign.
 
 **Determinism:** the same input must give the same schedule. Break ties by
 entry ID, so runs can be tested and compared.
+
+**How it's built** (`backend/matcher.go`, a pure function; Proposed where
+the rules above leave room):
+
+- **Fixed teams.** An entry naming a partner teams with one of the
+  partner's confirmed entries that shares a team format. Mutual requests
+  are settled first, then one-sided ones where the partner's entry names
+  no one, each in entry-ID order; a partner's entry that names someone else
+  stays theirs. An entry whose partner can't be found plays solo, with a
+  warning to the admin.
+- **Format for a flexible entry** (rule 4 made concrete). Head counts
+  decide, not ratings: entries and teams allowing several formats are
+  spread so the fewest players are left over (singles wants an even count,
+  doubles and mixed a multiple of four players, a fixed team counting as
+  two). An exact search over the count residues finds that; among equally
+  good choices, flexible entries take singles, then doubles, then mixed, in
+  entry-ID order.
+- **Who sits out** an odd pool: the entry that joined last, unless benching
+  another lets more matches happen (one player's two entries can't play
+  each other). In doubles and mixed, solo entries sit out before a fixed
+  team. They go on standby, "no opponent".
+- **Rating gaps** over 200 are flagged on every format, by side rating.
+- **Mixed** is paired like doubles until profiles have a gender, and every
+  mixed match is flagged "gender balance not checked".
+- **One player on both sides** never happens: groups of four are four
+  different players, and teams sharing a player don't meet.
+- **Slots.** Matches whose players have the most matches are placed first,
+  then doubles and mixed before singles (four entries a slot instead of
+  two), each at the earliest free court time, "Court 1" first. "At least one
+  slot between" a player's matches means a gap of the shorter of the two
+  slot lengths. Matches that don't fit, or exceed `max_matches`, put their
+  entries on standby, "no free slot".
+- **Judges** are assigned in time order: a judge not playing in or during
+  the match and not judging another at the same time, with the fewest
+  matches so far (then lowest user ID). None free: no judge, flagged.
+- **Publishing** happens once per event in version 1, and not when the
+  pool makes no match at all. Later runs that only fill gaps (walk-ins,
+  no-shows, entries confirmed after publishing) are future work.
 
 ---
 
@@ -481,7 +521,15 @@ event is saved and when it's published, inside the transaction.
 ## 11. Data model (target)
 
 Built so far (migration `000005_events`): `venues`, `courts`, `events`,
-`event_courts`. The rest is proposed.
+`event_courts`. `000006` adds `event_judges`; `000007` adds `entries`
+(without `challenge_id` yet) and a `pg_trgm` index on `lower(username)` for
+search. `000008` adds `player_ratings` (rows created lazily: no row means
+1200), `matches` and `match_sides`, and on `entries` `match_id`,
+`standby_reason`, `confirmed_by` and `confirmed_at`, and on `events`
+`schedule_published_at` and `schedule_published_by`. `matches` stores
+`starts_at` and `ends_at` rather than slot minutes, and an exclusion
+constraint (`btree_gist`) keeps a court from holding two matches that
+aren't cancelled at overlapping times. The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -538,6 +586,12 @@ match.
    closest to the preferred time (the earlier one on a tie), a court, and a
    judge from the event's judges. Both players are told the venue, court,
    date, time and judge.
+
+**On Home** (Decided): a "Challenge people near you" row shows a few
+players to challenge, each with their rating, in place of the old weekly
+activity chart. "Near you" means players with recent entries at venues near
+the player, closest rating first (Proposed). It's built with challenges
+(build step 7); until then Home shows only the player's rating.
 
 **Rules** (Proposed unless marked):
 
@@ -648,13 +702,32 @@ Every scheduled match is rated (Decided), so these are too.
 3. **Done:** admin endpoints and the admin-mode toggle: venues, courts,
    events (draft → publish → cancel), judges. Migration `000006` adds
    `event_judges` and `events.created_by`.
-4. Entries (open, one per match) with holds and the capacity check, plus
-   the event details and join screens. The username search (section 13) and the
-   court double-booking check (section 10).
+4. **Done:** entries (open, one per match) with holds and the capacity
+   check, plus the event details and join screens. The username search (section 13) and the
+   court double-booking check (section 10). **Backend done** (migration
+   `000007`): `POST /api/events/{id}/entries`, `GET /api/me/entries`,
+   `DELETE /api/me/entries/{id}`, a real `spotsLeft`, `GET
+   /api/users/search`, and the court check on save and publish. The band
+   reads `player_ratings` since step 6: every chosen format's rating must
+   be inside it. Screens: Home on real
+   events (location, else Bangalore) with the rating strip,
+   `/events/{id}`, `/events/{id}/join` (formats, partner search) and
+   `/entries/{id}` (the held spot, then "finding your rival" once paid).
 5. The payment adapter (Razorpay) and webhooks, with a fake provider for
    local development, the same way OTP has a console provider.
-6. Player ratings (starting at 1200), matches, and the matching algorithm,
-   with its preview and publish steps.
+6. **Done:** player ratings (starting at 1200), matches, and the
+   matching algorithm, with its preview and publish steps (migration
+   `000008`): `POST /api/admin/events/{id}/schedule/preview` and
+   `/publish`, `GET /api/admin/events/{id}/schedule` (the saved one),
+   `GET /api/admin/events/{id}/entries`, `GET /api/me/matches`,
+   and `POST /api/admin/entries/{id}/mark-paid`, a stopgap that confirms an
+   entry paid offline at the desk until step 5's webhook confirms online
+   payments. `-seed-demo` adds 16 rated demo players with paid entries and
+   two judges in "Midweek Rally Night". Ratings don't change after a match
+   until step 9. Screens: admin "Entries & schedule"
+   (`/admin/events/{id}/schedule`: mark paid, preview, publish, the saved
+   schedule) and the player's Matches tab (`/matches`). Event pages show
+   the venue on a Google map with directions.
 7. Challenges (section 12): request, accept, both pay, fixed slot.
 8. Live scoring: the judge console, the point log and server-sent events.
 9. Rating updates, the result screen and the leaderboard.

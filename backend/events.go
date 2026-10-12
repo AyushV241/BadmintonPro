@@ -62,7 +62,9 @@ type Event struct {
 	// matches its courts can host.
 	Capacity   int `json:"capacity"`
 	MaxMatches int `json:"maxMatches"`
-	// SpotsLeft is the capacity until joining exists.
+	// SpotsLeft is how many more entries can join: the smaller of Capacity
+	// and 2 × MaxMatches (an entry needs half a match), minus the live
+	// entries (paid ones and those still inside their payment hold).
 	SpotsLeft int `json:"spotsLeft"`
 	// RatingMin and RatingMax are the Elo band; nil when there is no limit.
 	RatingMin *int `json:"ratingMin"`

@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { AdminShell, ErrorNote, StatusChip } from "@/components/admin/AdminShell";
 import { EventForm } from "@/components/admin/EventForm";
 import { FieldLabel } from "@/components/form/FieldLabel";
-import { XIcon } from "@/components/icons";
+import { ArrowRightIcon, XIcon } from "@/components/icons";
 import { Button, Input } from "@/components/ui";
 import {
   ApiError,
@@ -214,6 +215,21 @@ function EventAdmin({ id }: { id: string }) {
         </div>
         <ErrorNote message={error} />
       </div>
+
+      {e.status !== "draft" && (
+        <Link
+          href={`/admin/events/${e.id}/schedule`}
+          className="flex items-center gap-3 rounded-[22px] border border-line bg-surface p-4"
+        >
+          <span className="flex flex-1 flex-col">
+            <span className="text-[15px] font-semibold">Entries &amp; schedule</span>
+            <span className="text-sm text-muted">
+              {e.capacity - e.spotsLeft} of {e.capacity} taken · mark payments, preview and publish matches
+            </span>
+          </span>
+          <ArrowRightIcon className="size-5 text-muted" />
+        </Link>
+      )}
 
       {e.status === "draft" ? (
         <EventForm

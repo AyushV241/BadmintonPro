@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { AdminShell, ErrorNote } from "@/components/admin/AdminShell";
+import { MapPreview } from "@/components/events/VenueMap";
 import { FieldLabel } from "@/components/form/FieldLabel";
 import { PinIcon } from "@/components/icons";
 import { Button, Input } from "@/components/ui";
@@ -13,6 +14,13 @@ const message = (err: unknown) => (err instanceof ApiError ? err.message : "Some
 function decimal(text: string): number | null {
   const n = Number.parseFloat(text);
   return Number.isNaN(n) ? null : n;
+}
+
+/** Both coordinates typed and in range: worth showing on a map. */
+function validPoint(lat: string, lng: string) {
+  const a = decimal(lat);
+  const b = decimal(lng);
+  return a !== null && b !== null && Math.abs(a) <= 90 && Math.abs(b) <= 180;
 }
 
 function VenueCard({ venue, onChange }: { venue: AdminVenue; onChange: (v: AdminVenue) => void }) {
@@ -152,8 +160,12 @@ function NewVenueForm({ onCreated }: { onCreated: (v: AdminVenue) => void }) {
         </div>
       </div>
       <p className="text-xs text-muted">
-        Location lets players find the venue by distance. Copy it from a map app.
+        Location lets players find the venue by distance and shows it on a map. In Google Maps, long-press the
+        venue and copy the numbers that appear.
       </p>
+      {validPoint(lat, lng) && (
+        <MapPreview lat={decimal(lat)!} lng={decimal(lng)!} title="Map preview of the new venue" />
+      )}
       <ErrorNote message={error} />
       <Button type="submit" variant="accent" size="lg" fullWidth loading={busy}>
         Create venue

@@ -44,6 +44,12 @@ type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// rowsQuerier is a querier that can also return several rows.
+type rowsQuerier interface {
+	querier
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // userColumns is the users row as a User, for any query that aliases users
 // as u. scanUser reads them in this order.
 const userColumns = `u.id, u.name, COALESCE(u.username, ''), COALESCE(u.email, ''), u.email_verified,
