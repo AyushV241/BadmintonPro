@@ -15,6 +15,7 @@ import (
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
 	"github.com/AyushV241/BadmintonPro/backend/internal/otp"
+	"github.com/AyushV241/BadmintonPro/backend/internal/payments"
 )
 
 const (
@@ -40,6 +41,9 @@ func run() error {
 	// because the repo-root .env may point DATABASE_URL at a shared one.
 	seedOnly := flag.Bool("seed-demo", false, "write demo venues, events, players and entries to DATABASE_URL and exit")
 	allowRemote := flag.Bool("allow-remote", false, "let -seed-demo write to a database that isn't on this machine")
+	// Stands in for Razorpay's webhook while it can't reach this machine.
+	mockWebhook := flag.String("mock-webhook", "", "send a signed payment.captured webhook for this Razorpay test order (order_…) to -webhook-url and exit")
+	webhookURL := flag.String("webhook-url", "http://localhost:8080/api/payments/webhook", "where -mock-webhook sends it")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -47,6 +51,10 @@ func run() error {
 
 	if err := loadDotEnv(); err != nil {
 		return err
+	}
+
+	if *mockWebhook != "" {
+		return sendMockWebhook(ctx, *mockWebhook, *webhookURL)
 	}
 
 	databaseURL := envOr("DATABASE_URL", defaultDatabaseURL)
@@ -80,10 +88,16 @@ func run() error {
 		return err
 	}
 
+	paymentProvider, err := newPaymentProvider(os.Getenv("PAYMENT_PROVIDER"), cookieSecure)
+	if err != nil {
+		return err
+	}
+
 	go pruneSessions(ctx, store)
 
 	api := NewAPI(store, providers, phone, cookieSecure).
-		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store)
+		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store).
+		WithPayments(store, paymentProvider)
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
 		Handler:           api.Routes(),
@@ -205,6 +219,44 @@ func newOTPProvider(name string, cookieSecure bool) (otp.Provider, error) {
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown OTP_PROVIDER %q (want console or twilio)", name)
+	}
+}
+
+// newPaymentProvider is the one place that knows which vendor takes
+// payments, like newOTPProvider. nil means payments are disabled. It logs
+// the choice, never a secret.
+func newPaymentProvider(name string, cookieSecure bool) (payments.Provider, error) {
+	switch name {
+	case "":
+		log.Print("payments disabled (set PAYMENT_PROVIDER to fake or razorpay)")
+		return nil, nil
+	case "razorpay":
+		keyID := os.Getenv("RAZORPAY_KEY_ID")
+		p, err := payments.NewRazorpay(keyID, os.Getenv("RAZORPAY_KEY_SECRET"), os.Getenv("RAZORPAY_WEBHOOK_SECRET"))
+		if err != nil {
+			return nil, err
+		}
+		mode := "live"
+		if strings.HasPrefix(keyID, "rzp_test_") {
+			mode = "test"
+		}
+		webhook := "webhook enabled"
+		if os.Getenv("RAZORPAY_WEBHOOK_SECRET") == "" {
+			webhook = "webhook disabled (set RAZORPAY_WEBHOOK_SECRET)"
+		}
+		log.Printf("payments: razorpay, %s mode, %s", mode, webhook)
+		return p, nil
+	case "fake":
+		// Accepts any payment the frontend's fake checkout makes up. Anywhere
+		// served over HTTPS is a real deployment, where that would be free
+		// entry for everyone.
+		if cookieSecure {
+			return nil, errors.New("PAYMENT_PROVIDER=fake is for local development and can't be used with COOKIE_SECURE=true")
+		}
+		log.Print("payments: fake provider (local development: no money moves)")
+		return payments.NewFake(), nil
+	default:
+		return nil, fmt.Errorf("unknown PAYMENT_PROVIDER %q (want fake or razorpay)", name)
 	}
 }
 

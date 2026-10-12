@@ -515,3 +515,38 @@ export async function adminMarkPaid(entryId: string): Promise<AdminEntry> {
   );
   return entry;
 }
+
+// --- Payments ---------------------------------------------------------------
+// The server creates an order with the payment provider; the browser opens
+// the provider's checkout; the server verifies what comes back. The
+// provider's webhook confirms too, so a closed tab still counts.
+
+export type Checkout = {
+  provider: "razorpay" | "fake";
+  /** Razorpay's public key id; empty for the fake provider. */
+  keyId: string;
+  orderId: string;
+  amountPaise: number;
+  currency: string;
+  name: string;
+  description: string;
+  prefill: { name: string; email: string; contact: string };
+};
+
+/** A checkout to open, or the entry itself when nothing was due (a free event). */
+export type PayStart = { checkout: Checkout; entry?: undefined } | { entry: Entry; checkout?: undefined };
+
+export function startPayment(entryId: string): Promise<PayStart> {
+  return request<PayStart>(`/api/me/entries/${encodeURIComponent(entryId)}/pay`, { method: "POST" });
+}
+
+export type CheckoutResult = { orderId: string; paymentId: string; signature: string };
+
+/** Hands the checkout's result to the server, which checks it and confirms the entry. */
+export async function verifyPayment(result: CheckoutResult): Promise<Entry> {
+  const { entry } = await request<{ entry: Entry }>("/api/payments/verify", {
+    method: "POST",
+    body: JSON.stringify(result),
+  });
+  return entry;
+}

@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { formatList } from "@/components/events/EventBits";
-import { CheckIcon, ClockIcon, SparkleIcon } from "@/components/icons";
+import { CheckIcon, ClockIcon, LockIcon, SparkleIcon } from "@/components/icons";
 import { ApiError, cancelEntry, me, myEntries, type Entry } from "@/lib/api";
 import { formatWhen, rupees } from "@/lib/eventTime";
 import { PAIRING_GAP, STARTING_RATING } from "@/lib/rating";
+import { usePayEntry } from "@/lib/usePayEntry";
 
 /** Seconds until `iso`, ticking every second; 0 once it has passed. */
 function useSecondsLeft(iso: string | null) {
@@ -54,7 +55,17 @@ function Rings() {
   );
 }
 
-function EntryStatus({ entry, onChange }: { entry: Entry; onChange: (e: Entry) => void }) {
+function EntryStatus({
+  entry,
+  onChange,
+  notice,
+}: {
+  entry: Entry;
+  onChange: (e: Entry) => void;
+  /** How checkout ended on the way here, if it didn't end in a payment. */
+  notice: "failed" | "closed" | null;
+}) {
+  const payEntry = usePayEntry();
   const e = entry.event;
   const tz = e.venue.timezone;
   const secondsLeft = useSecondsLeft(entry.status === "pending_payment" ? entry.holdExpiresAt : null);
@@ -91,14 +102,19 @@ function EntryStatus({ entry, onChange }: { entry: Entry; onChange: (e: Entry) =
     body = `We're pairing you with a player rated about ${STARTING_RATING - PAIRING_GAP}–${STARTING_RATING + PAIRING_GAP}. We'll notify you with your opponent, court and judge.`;
   } else if (held) {
     title = "Your spot is held.";
-    // TODO(step 5): replace with the payment provider's checkout.
-    body = "Payments aren't switched on yet. Once they are, paying here confirms your place in the pool.";
+    body =
+      notice === "failed"
+        ? "The payment didn't go through, and you haven't been charged. Try again before the hold runs out."
+        : "Pay to confirm your place in the pool. If you don't, the spot goes back when the hold runs out.";
   } else if (expired) {
     title = "Your hold ran out.";
     body = "The spot went back to the pool. You can try again while the event still has room.";
   } else {
-    title = entry.status === "refunded" ? "Entry refunded." : "Entry cancelled.";
-    body = "This entry no longer has a place in the pool.";
+    title = entry.status === "refunded" ? "Payment refunded." : "Entry cancelled.";
+    body =
+      entry.status === "refunded"
+        ? "Your payment arrived after the spot had gone, so the full amount is on its way back to you."
+        : "This entry no longer has a place in the pool.";
   }
 
   const minutes = Math.floor(secondsLeft / 60);
@@ -132,14 +148,28 @@ function EntryStatus({ entry, onChange }: { entry: Entry; onChange: (e: Entry) =
           <Step state="todo" title="Court and judge assigned" />
           <Step state="todo" title={`Match day · ${formatWhen(e.startsAt, tz)}`} />
         </ol>
-        {error && (
+        {(error ?? payEntry.error) && (
           <p role="alert" className="mt-3 w-full rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error}
+            {error ?? payEntry.error}
           </p>
         )}
       </div>
 
       <footer className="fixed bottom-0 left-1/2 z-10 flex w-full max-w-[480px] -translate-x-1/2 flex-col gap-2.5 bg-background px-5 pt-3 pb-[max(28px,env(safe-area-inset-bottom))]">
+        {held && (
+          <button
+            type="button"
+            onClick={async () => {
+              const outcome = await payEntry.pay(entry.id);
+              if ("paid" in outcome) onChange(outcome.paid);
+            }}
+            disabled={payEntry.busy}
+            className="flex min-h-[54px] items-center justify-center gap-2.5 rounded-2xl bg-primary text-base font-semibold text-on-primary disabled:opacity-50"
+          >
+            <LockIcon className="size-4" />
+            {payEntry.busy ? "Paying…" : `Pay ${rupees(e.feePaise)}`}
+          </button>
+        )}
         {expired && (
           <Link
             href={`/events/${e.id}/join`}
@@ -172,6 +202,7 @@ function EntryStatus({ entry, onChange }: { entry: Entry; onChange: (e: Entry) =
 /** One entry: held while paying, then waiting to be paired. */
 export default function EntryPage() {
   const { id } = useParams<{ id: string }>();
+  const payment = useSearchParams().get("payment");
   const router = useRouter();
   const [entry, setEntry] = useState<Entry | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -207,5 +238,7 @@ export default function EntryPage() {
       </main>
     );
   }
-  return <EntryStatus entry={entry} onChange={setEntry} />;
+  return (
+    <EntryStatus entry={entry} onChange={setEntry} notice={payment === "failed" || payment === "closed" ? payment : null} />
+  );
 }

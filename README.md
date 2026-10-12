@@ -141,6 +141,65 @@ refuses as too many gets `429` with `Retry-After`. The console provider only
 limits wrong guesses (5 per code). Add our own limits back before relying on
 `OTP_PROVIDER=twilio` anywhere public: every SMS costs money.
 
+### Payments (optional)
+
+Entry fees go through an adapter chosen by `PAYMENT_PROVIDER`
+(`backend/internal/payments`), like OTP. Unset, paid entries can't be paid
+for (`503 "payments aren't set up"`); free events still confirm.
+
+**Locally, no account needed:** `PAYMENT_PROVIDER=fake` in `backend/.env`.
+The frontend's fake checkout makes up a `pay_fake_…` payment and signs it
+`fake:<orderId>|<paymentId>`; every payment is captured and every refund
+succeeds. Its orders live in memory, so restarting the backend forgets them
+(pay again from a new entry). `fake` refuses to start when
+`COOKIE_SECURE=true`.
+
+**Razorpay test mode** (no real money):
+
+1. In the [Razorpay dashboard](https://dashboard.razorpay.com), switch to
+   **Test Mode**, then **Account & Settings → API Keys → Generate Test Key**.
+2. In `backend/.env` (gitignored):
+
+   ```bash
+   PAYMENT_PROVIDER=razorpay
+   RAZORPAY_KEY_ID=rzp_test_…
+   RAZORPAY_KEY_SECRET=…
+   ```
+
+   The backend logs `payments: razorpay, test mode, webhook disabled …`.
+3. Pay in Checkout with Razorpay's
+   [test cards or UPI IDs](https://razorpay.com/docs/payments/payments/test-card-details/)
+   (e.g. UPI `success@razorpay`). The page's `POST /api/payments/verify`
+   confirms the entry.
+4. **Webhooks** (optional locally, required in production, because the
+   page may never get back to verify): Razorpay must reach the backend, so
+   expose it with a tunnel such as `ngrok http 8080`. In the dashboard,
+   **Webhooks → Add New Webhook**: URL
+   `https://<your-tunnel>/api/payments/webhook`, a secret of your choice,
+   events `payment.captured` and `order.paid`. Put the same secret in
+   `RAZORPAY_WEBHOOK_SECRET` and restart. Without it the webhook answers
+   `503`.
+5. **Mock webhook** (local, no tunnel): set `RAZORPAY_WEBHOOK_SECRET` in
+   `.env` to any value and restart the backend. Start a payment in the app
+   and close Checkout without paying; the backend logs
+   `payments: order order_… for entry ent_…`. Then, from `backend/`:
+
+   ```sh
+   go run . -mock-webhook order_…
+   ```
+
+   It reads the order's amount from Razorpay, signs a `payment.captured`
+   event with your secret exactly as Razorpay does, and posts it to
+   `http://localhost:8080/api/payments/webhook` (change with
+   `-webhook-url`). The entry is confirmed as if the player had paid and
+   closed the tab. Running it again resends the same payment, so it
+   answers `already applied`, as a real Razorpay retry would. It refuses
+   live keys. A made-up payment can't be refunded: if the backend decides
+   to refund it (the hold ran out and the event filled up), Razorpay
+   answers 404 and the payment stays `refund_pending`.
+
+Live keys (`rzp_live_…`) work the same way; never commit either kind.
+
 ## Database credentials
 
 **The credentials in `docker-compose.yml` are not secrets and are committed on
@@ -251,9 +310,12 @@ mode**; it will check roles later (see the design doc, section 10).
 | `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
 | `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city. `?lat=&lng=&radiusKm=` keeps venues within that distance (default 10 km, at most 100) and adds `distanceKm` to each event; venues without coordinates drop out. `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Each event has its `formats`, `slotMinutes` per format, `feePaise`, `capacity`, `maxMatches`, `spotsLeft` (capacity minus live entries), `registrationClosesAt` and an optional Elo band (`ratingMin`/`ratingMax`). Public: it says nothing about who joined |
 | `GET` | `/api/events/{id}` | — | One event with its venue and courts. Drafts are `404`; cancelled and completed events stay visible |
-| `POST` | `/api/events/{id}/entries` | cookie | `{"formats":["singles","doubles"],"partnerUsername"?:"@asha"}`: joins with an **open entry** (one match), `201 {"entry"}` as `pending_payment` with a 10-minute `holdExpiresAt`. A partner only with doubles or mixed. `400` bad formats or partner, `403` profile not set up, `404` unknown event, draft or partner, `409` closed, cancelled, outside the Elo band, already 3 entries, full, or no matches left. Nothing confirms entries until payments exist |
+| `POST` | `/api/events/{id}/entries` | cookie | `{"formats":["singles","doubles"],"partnerUsername"?:"@asha"}`: joins with an **open entry** (one match), `201 {"entry"}` as `pending_payment` with a 10-minute `holdExpiresAt`. A partner only with doubles or mixed. `400` bad formats or partner, `403` profile not set up, `404` unknown event, draft or partner, `409` closed, cancelled, outside the Elo band, already 3 entries, full, or no matches left. Pay for it with `POST /api/me/entries/{id}/pay` |
 | `GET` | `/api/me/entries` | cookie | `{"entries":[…]}`, newest first. Each entry: `id`, `kind`, `formats`, `partner` (`{"id","username","name"}` or `null`), `source`, `status`, `holdExpiresAt`, `holdExpired` (an unpaid entry whose hold ran out; it no longer counts), `createdAt`, and `event` (`id`, `title`, `status`, times, `feePaise`, `currency`, `venue`) |
-| `DELETE` | `/api/me/entries/{id}` | cookie | Cancels your own `pending_payment` entry: `200 {"entry"}` with `status: "cancelled"`; the row is kept. `404` if it isn't yours, `409` once paid or already cancelled |
+| `DELETE` | `/api/me/entries/{id}` | cookie | Cancels your own `pending_payment` entry: `200 {"entry"}` with `status: "cancelled"`; the row is kept, and its open order is marked failed (a payment that still arrives is refunded). `404` if it isn't yours, `409` once paid or already cancelled |
+| `POST` | `/api/me/entries/{id}/pay` | cookie | Starts paying for your held entry: `200 {"checkout":{"provider":"razorpay"\|"fake","keyId","orderId","amountPaise","currency","name":"BadmintonPro","description":"<event title> · 1 entry","prefill":{"name","email","contact"}}}`. Creates a provider order, or reuses the entry's open one for the same amount. A free event (`feePaise` 0) confirms at once and returns `200 {"entry"}` instead. `404` not yours, `409` not `pending_payment`, hold expired or event not published, `503` payments not set up, `502` the provider failed |
+| `POST` | `/api/payments/verify` | cookie | `{"orderId","paymentId","signature"}` from the checkout: checks the signature, fetches (and if only authorized, captures) the payment, then confirms: `200 {"entry"}`, normally `confirmed`. A payment that arrives after the hold ran out is confirmed if the event still has room, else the entry comes back `refunded` and the payment is refunded. A second payment for an entry already paid for is refunded. Repeats change nothing. `400` bad body or signature, `404` unknown order or not yours, `409` payment failed or for another order or amount, `502` provider error, `503` not set up |
+| `POST` | `/api/payments/webhook` | signature | The provider's webhook (no session): `X-Razorpay-Signature` must be the HMAC of the raw body (at most 64 KB) with `RAZORPAY_WEBHOOK_SECRET`. `payment.captured` and `order.paid` confirm like verify; repeats and out-of-order events are no-ops. `200 {"status"}`: `applied`, `already applied` or `ignored` (other events, unknown orders). `400` bad signature, `503` no webhook secret or payments not set up, `500` (retried by the provider) on our own failure |
 | `GET` | `/api/me/matches` | cookie | `{"matches":[…]}`, soonest first, every status. Each: `id`, `status`, `format`, `event` (`{"id","title"}`, `null` without one), `venue`, `court` (`{"id","label"}`), `startsAt`, `endsAt`, `judge` (`{"userId","name","username"}` or `null`), `sides` (`[{"side":"A","players":[{"userId","name","username","rating"}],"rating"}]`, ratings current, side rating the average), `mySide` and `winnerSide` |
 | `GET` | `/api/users/search?q=` | cookie | `{"users":[{"id","username","name"}]}`, at most 20: exact, prefix, then contains matches, plus fuzzy ones when fewer than 5 and `q` has 3+ characters. `q` ignores case and a leading `@`; empty gives `[]`. Leaves out you and incomplete profiles, never shows phone or email. 30 searches a minute per user, then `429` with `Retry-After` |
 | `GET` | `/api/admin/venues` | admin | Every venue with its courts |
@@ -268,7 +330,7 @@ mode**; it will check roles later (see the design doc, section 10).
 | `POST` | `/api/admin/events/{id}/judges` | admin | `{"username"}` (any case, `@` optional): adds a judge. `404` if no one has that username |
 | `DELETE` | `/api/admin/events/{id}/judges/{userId}` | admin | Removes a judge |
 | `GET` | `/api/admin/events/{id}/entries` | admin | `{"entries":[…]}`, every status, in join order. Each: `id`, `user` (`{"id","username","name"}`), `ratings` (per format of the entry), `kind`, `formats`, `partner`, `source`, `status`, `holdExpiresAt`, `holdExpired`, `matchId`, `standbyReason`, `confirmedBy` (the admin, or `null`), `confirmedAt`, `createdAt` |
-| `POST` | `/api/admin/entries/{id}/mark-paid` | admin | Stopgap for the desk's offline payment until payments exist (step 5 confirms online entries from the webhook): `pending_payment` → `confirmed`, recording who and when, `200 {"entry"}`. An expired hold is fine if the event still has room (capacity, `maxMatches`, 3 per player, checked under the event lock); the registration cutoff doesn't apply. `404` unknown, `409` not pending, event not published or over, or no room |
+| `POST` | `/api/admin/entries/{id}/mark-paid` | admin | The desk's offline payment (cash or UPI to the venue): `pending_payment` → `confirmed`, recording who and when, and an offline payment for the event's fee (none for a free event), `200 {"entry"}`. An expired hold is fine if the event still has room (capacity, `maxMatches`, 3 per player, checked under the event lock); the registration cutoff doesn't apply. `404` unknown, `409` not pending, event not published or over, or no room |
 | `GET` | `/api/admin/events/{id}/schedule` | admin | The published schedule as saved, in the same shape as the preview, with each player's current rating and the flags worked out again. `404` until it's published, or for an unknown event |
 | `POST` | `/api/admin/events/{id}/schedule/preview` | admin | Runs the matcher on the confirmed open entries and returns `{"schedule"}` without saving: `eventId`, `publishedAt`, `matches` (`id` (`null` in a preview), `format`, `court` `{"id","label"}`, `startsAt`, `endsAt`, `judge` or `null`, `sides` `[{"side","players":[{"userId","name","username","rating","entryId"}],"rating"}]`, `flags` such as `"rating gap 240"`, `"gender balance not checked"`, `"no judge"`), `standby` (`[{"entryId","user","reason"}]`, reason `"no opponent"`, `"no free slot"` or `"format not offered"`) and `warnings` (strings). `404` unknown event |
 | `POST` | `/api/admin/events/{id}/schedule/publish` | admin | Same, in one transaction with the event locked, and saves it: matches and sides, entries to `scheduled` (with `matchId`) or `standby` (with the reason), the publish time. `201 {"schedule"}` with match IDs. Published events only; once per event in version 1. `409` not published, already published, or the entries make no match |
@@ -371,6 +433,10 @@ ones, and variables already set in the shell win over both:
 | `TWILIO_VERIFY_SERVICE_SID` | The Verify Service that sends codes (`VA…`) | — |
 | `PHONE_REGIONS` | Comma-separated ISO country codes allowed to sign in by phone | `IN` |
 | `PHONE_DEFAULT_REGION` | Country assumed for numbers typed without a country code | first of `PHONE_REGIONS` |
+| `PAYMENT_PROVIDER` | Enables payments: `fake` (made-up payments; local only) or `razorpay` (see *Payments*) | — (disabled) |
+| `RAZORPAY_KEY_ID` | Razorpay key ID, `rzp_test_…` or `rzp_live_…`; sent to the browser's checkout | — |
+| `RAZORPAY_KEY_SECRET` | Razorpay key secret: API calls and checkout signatures | — |
+| `RAZORPAY_WEBHOOK_SECRET` | The secret set on the Razorpay webhook; enables `/api/payments/webhook` | — (webhook disabled) |
 
 **Frontend** — copy `frontend/.env.example` to `frontend/.env.local`:
 
@@ -422,6 +488,7 @@ BadmintonPro/
 │   ├── entries*.go          # joining events: entries, holds, the capacity check
 │   ├── matcher.go           # the matching algorithm: a pure function, no database
 │   ├── matches*.go          # schedule preview and publish, mark-paid, a player's matches
+│   ├── payments*.go         # pay, verify, webhook; the one confirmation path
 │   ├── search*.go           # username search (pg_trgm)
 │   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── phone.go             # phone number normalisation to E.164
@@ -432,6 +499,7 @@ BadmintonPro/
 │   ├── migrations/
 │   ├── internal/oauth/      # Provider interface, registry, Google adapter
 │   ├── internal/otp/        # OTP Provider interface; Twilio and in-memory adapters
+│   ├── internal/payments/   # payment Provider interface; Razorpay and fake adapters
 │   └── *_test.go
 └── frontend/
     ├── app/
@@ -464,6 +532,10 @@ Deliberate shortcuts, not oversights:
   the dashboard once the profile is complete.
 - **No rate limiting of our own on phone codes.** Only the OTP vendor's
   limits apply (see *Phone sign-in*); ours are planned in `TODO.md`.
+- **A refund the provider refuses isn't retried.** The payment stays
+  `refund_pending` (and is logged) until a retry job exists; refund it from
+  the Razorpay dashboard meanwhile. Refunds for cancelling a paid entry wait
+  for the refund policy (design doc, open question 2).
 - **Apple will need `SameSite=None; Secure` on the OAuth flow cookie**, and so
   HTTPS. Its callback is a cross-site POST, which `Lax` cookies aren't sent on.
   Google is unaffected.

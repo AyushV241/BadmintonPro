@@ -215,8 +215,9 @@ func (s *PostgresStore) ListUserEntries(ctx context.Context, userID string) ([]E
 func (s *PostgresStore) CancelEntry(ctx context.Context, userID, entryID string) (Entry, error) {
 	var entry Entry
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		// Locks the entry so a payment confirming it (step 5) can't land
-		// between the check and the update.
+		// Locks the entry so a payment confirming it (ConfirmPayment) can't
+		// land between the check and the update; a payment that lands after
+		// it is refunded.
 		var status string
 		err := tx.QueryRow(ctx, `SELECT status FROM entries WHERE id = $1 AND user_id = $2 FOR UPDATE`,
 			entryID, userID).Scan(&status)
@@ -234,6 +235,12 @@ func (s *PostgresStore) CancelEntry(ctx context.Context, userID, entryID string)
 		if _, err := tx.Exec(ctx, `UPDATE entries SET status = $2, updated_at = now() WHERE id = $1`,
 			entryID, EntryCancelled); err != nil {
 			return fmt.Errorf("cancel entry: %w", err)
+		}
+		// Nobody will pay its open order now.
+		if _, err := tx.Exec(ctx, `
+			UPDATE payments SET status = 'failed', updated_at = now() WHERE entry_id = $1 AND status = 'created'`,
+			entryID); err != nil {
+			return fmt.Errorf("close open order: %w", err)
 		}
 		entry, err = loadEntry(ctx, tx, userID, entryID)
 		return err

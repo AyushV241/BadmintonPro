@@ -456,11 +456,12 @@ func (s *PostgresStore) MarkEntryPaid(ctx context.Context, entryID, adminID stri
 		// The event row first, then the entry: the order CreateEntry and
 		// PublishSchedule lock in, so the counts below can't go stale and
 		// nothing deadlocks.
-		var status string
+		var status, currency string
 		var endsAt time.Time
-		var capacity, maxMatches int
-		if err := tx.QueryRow(ctx, `SELECT status, ends_at, capacity, max_matches FROM events WHERE id = $1 FOR UPDATE`,
-			eventID).Scan(&status, &endsAt, &capacity, &maxMatches); err != nil {
+		var capacity, maxMatches, fee int
+		if err := tx.QueryRow(ctx, `
+			SELECT status, ends_at, capacity, max_matches, fee_paise, currency FROM events WHERE id = $1 FOR UPDATE`,
+			eventID).Scan(&status, &endsAt, &capacity, &maxMatches, &fee, &currency); err != nil {
 			return fmt.Errorf("lock event: %w", err)
 		}
 		var entryStatus, userID string
@@ -481,30 +482,31 @@ func (s *PostgresStore) MarkEntryPaid(ctx context.Context, entryID, adminID stri
 		// Live entries other than this one, by the same rule as CreateEntry.
 		// A held entry was already counted, so it always fits; an expired
 		// hold has to find room again.
-		var live, mine int
-		if err := tx.QueryRow(ctx, `
-			SELECT count(*), count(*) FILTER (WHERE user_id = $2)
-			FROM entries
-			WHERE event_id = $1 AND id <> $4
-			  AND (status IN ('confirmed', 'standby', 'scheduled')
-			       OR (status = 'pending_payment' AND hold_expires_at > $3))`,
-			eventID, userID, now, entryID,
-		).Scan(&live, &mine); err != nil {
-			return fmt.Errorf("count entries: %w", err)
-		}
-		switch {
-		case mine >= maxEntriesPerPlayer:
-			return ErrEntryLimit
-		case live >= capacity:
-			return ErrEventFull
-		case live+1 > 2*maxMatches:
-			return ErrNoMatchesLeft
+		if err := checkRoom(ctx, tx, eventID, userID, entryID, capacity, maxMatches, now); err != nil {
+			return err
 		}
 
 		if _, err := tx.Exec(ctx, `
 			UPDATE entries SET status = 'confirmed', confirmed_by = $2, confirmed_at = $3, updated_at = now()
 			WHERE id = $1`, entryID, adminID, now.UTC()); err != nil {
 			return fmt.Errorf("confirm entry: %w", err)
+		}
+		// The money taken at the desk, in cash or by UPI, for the event's
+		// fee. A free event takes none, so it has no payment row. An online
+		// order the player left open stays open: if they pay it after all,
+		// ConfirmPayment refunds it as a second payment.
+		if fee > 0 {
+			paymentID, err := newID("pmt")
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO payments (id, entry_id, user_id, provider, kind, amount_paise, currency, status,
+					recorded_by, paid_at)
+				VALUES ($1, $2, $3, 'offline', 'offline', $4, $5, 'paid', $6, $7)`,
+				paymentID, entryID, userID, fee, currency, adminID, now.UTC()); err != nil {
+				return fmt.Errorf("record offline payment: %w", err)
+			}
 		}
 		entry, err = loadAdminEntry(ctx, tx, entryID)
 		return err

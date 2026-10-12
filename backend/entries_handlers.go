@@ -85,9 +85,8 @@ func (a *API) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		writeEntryError(w, err, "join the event")
 		return
 	}
-	// TODO(step 5, payments): start the payment here and return what the
-	// page needs to take it. Until then the entry stays pending_payment and
-	// its hold simply runs out.
+	// The page pays with POST /api/me/entries/{id}/pay next; until then, or
+	// if it never does, the hold simply runs out.
 	writeJSON(w, http.StatusCreated, entryResponse{Entry: entry})
 }
 
@@ -109,7 +108,8 @@ func (a *API) handleListMyEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCancelEntry cancels the caller's own unpaid entry, freeing its place
-// at once. The entry is kept, as cancelled.
+// at once. The entry is kept, as cancelled, and its open order is marked
+// failed; a payment that still arrives for it is refunded.
 //
 //	DELETE /api/me/entries/{id}
 func (a *API) handleCancelEntry(w http.ResponseWriter, r *http.Request) {

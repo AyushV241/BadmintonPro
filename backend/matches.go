@@ -161,9 +161,10 @@ type MatchStore interface {
 	// MarkEntryPaid confirms a pending_payment entry paid offline at the
 	// desk, recording which admin did it. An expired hold is fine as long as
 	// the event still has room, checked with the event row locked as
-	// CreateEntry does. It returns ErrNoSuchEntry, ErrEntryNotPending,
-	// ErrEventNotOpen, ErrEventOver, ErrEntryLimit, ErrEventFull or
-	// ErrNoMatchesLeft.
+	// CreateEntry does. It records the event's fee as an offline payments
+	// row in the same transaction (none for a free event). It returns
+	// ErrNoSuchEntry, ErrEntryNotPending, ErrEventNotOpen, ErrEventOver,
+	// ErrEntryLimit, ErrEventFull or ErrNoMatchesLeft.
 	MarkEntryPaid(ctx context.Context, entryID, adminID string, now time.Time) (AdminEntry, error)
 
 	// ListUserMatches returns the user's matches in every status, soonest

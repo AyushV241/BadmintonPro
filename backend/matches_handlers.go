@@ -122,10 +122,8 @@ func (a *API) handleAdminListEventEntries(w http.ResponseWriter, r *http.Request
 // handleAdminMarkEntryPaid confirms an unpaid entry that the player paid for
 // at the venue, in cash or by UPI (section 7, desk-assisted walk-ins).
 //
-// This is a stopgap until payments exist: step 5 confirms online entries
-// from the payment provider's webhook instead, and records offline payments
-// in a payments table. Until then this is also the only way any entry
-// becomes confirmed.
+// The payment is recorded as an offline payments row, noting the admin.
+// Online payments confirm entries through /api/payments instead.
 //
 //	POST /api/admin/entries/{id}/mark-paid
 func (a *API) handleAdminMarkEntryPaid(w http.ResponseWriter, r *http.Request, admin User) {

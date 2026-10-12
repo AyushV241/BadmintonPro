@@ -66,8 +66,9 @@ type Entry struct {
 	// HoldExpiresAt is when an unpaid entry gives up its place.
 	HoldExpiresAt *time.Time `json:"holdExpiresAt"`
 	// HoldExpired is true for a pending_payment entry whose hold has run out:
-	// it no longer counts towards the event, and paying for it is step 5's
-	// question. The status stays pending_payment; nothing sweeps it.
+	// it no longer counts towards the event and can't be paid for (a payment
+	// already under way is still confirmed if there's room). The status
+	// stays pending_payment; nothing sweeps it.
 	HoldExpired bool       `json:"holdExpired"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	Event       EntryEvent `json:"event"`
@@ -119,12 +120,8 @@ type EntryStore interface {
 	// ErrEntryNotCancellable.
 	CancelEntry(ctx context.Context, userID, entryID string) (Entry, error)
 
-	// TODO(step 5, payments): ConfirmEntry, called from the payment
-	// provider's webhook, moves pending_payment → confirmed. It must lock the
-	// entry row (as CancelEntry does) so a cancel and a payment can't both
-	// win, be idempotent for a repeated webhook, and decide what a payment
-	// that lands after the hold expired does: confirm it if the event still
-	// has room, else refund. Free events (feePaise 0) should confirm at once.
+	// Paying for an entry, and the confirmation that follows, is
+	// PaymentStore's (payments.go).
 }
 
 // entryRequest is the body of POST /api/events/{id}/entries.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/AyushV241/BadmintonPro/backend/internal/oauth"
+	"github.com/AyushV241/BadmintonPro/backend/internal/payments"
 )
 
 type API struct {
@@ -22,9 +23,14 @@ type API struct {
 	users   UserSearchStore
 	// matches is nil without a database too; the schedule, desk and
 	// player-match routes are then not registered.
-	matches     MatchStore
-	searchLimit *limiter
-	providers   *oauth.Registry
+	matches MatchStore
+	// payments is nil without a database too; paying is then not
+	// registered. paymentProvider is nil when payments are disabled: the
+	// routes are registered and answer 503 (free events still confirm).
+	payments        PaymentStore
+	paymentProvider payments.Provider
+	searchLimit     *limiter
+	providers       *oauth.Registry
 	// phone is nil when phone login is disabled.
 	phone *PhoneLogin
 	// cookieSecure marks cookies Secure. It must be true anywhere served over
@@ -61,6 +67,15 @@ func (a *API) WithEntries(entries EntryStore) *API {
 // need WithEvents and WithAdmin too.
 func (a *API) WithMatches(matches MatchStore) *API {
 	a.matches = matches
+	return a
+}
+
+// WithPayments enables paying for entries and the provider's webhook.
+// provider may be nil to leave payments disabled. They need WithEvents and
+// WithEntries too.
+func (a *API) WithPayments(store PaymentStore, provider payments.Provider) *API {
+	a.payments = store
+	a.paymentProvider = provider
 	return a
 }
 
@@ -111,6 +126,13 @@ func (a *API) Routes() http.Handler {
 		mux.HandleFunc("POST /api/events/{id}/entries", a.handleCreateEntry)
 		mux.HandleFunc("GET /api/me/entries", a.handleListMyEntries)
 		mux.HandleFunc("DELETE /api/me/entries/{id}", a.handleCancelEntry)
+	}
+	// Paying for an entry: start (signed in), the page's verify (signed
+	// in), and the provider's webhook (no session: signed by the provider).
+	if a.events != nil && a.entries != nil && a.payments != nil {
+		mux.HandleFunc("POST /api/me/entries/{id}/pay", a.handlePayEntry)
+		mux.HandleFunc("POST /api/payments/verify", a.handleVerifyPayment)
+		mux.HandleFunc("POST /api/payments/webhook", a.handlePaymentWebhook)
 	}
 	if a.matches != nil {
 		mux.HandleFunc("GET /api/me/matches", a.handleListMyMatches)

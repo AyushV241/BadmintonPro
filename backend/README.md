@@ -100,6 +100,9 @@ All optional.
 | `OTP_PROVIDER` | unset, so phone sign-in is off. `console` locally, `twilio` for real SMS |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | unset; needed for `OTP_PROVIDER=twilio` |
 | `PHONE_REGIONS` | `IN` |
+| `PAYMENT_PROVIDER` | unset, so payments are off. `fake` locally, `razorpay` for Razorpay |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | unset; needed for `PAYMENT_PROVIDER=razorpay` |
+| `RAZORPAY_WEBHOOK_SECRET` | unset, so the payment webhook answers `503` |
 
 Full descriptions are in [Configuration](../README.md#configuration).
 

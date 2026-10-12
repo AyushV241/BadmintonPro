@@ -11,6 +11,7 @@ import { BottomSheet, useBottomSheet } from "@/components/ui";
 import { ApiError, createEntry, getEvent, me, type BadmintonEvent, type EventFormat, type PublicUser } from "@/lib/api";
 import { formatWindow, rupees } from "@/lib/eventTime";
 import { initials } from "@/lib/initials";
+import { usePayEntry } from "@/lib/usePayEntry";
 import { PAIRING_GAP, STARTING_RATING } from "@/lib/rating";
 
 const ALL_FORMATS: EventFormat[] = ["singles", "doubles", "mixed"];
@@ -50,6 +51,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
   const [partner, setPartner] = useState<PublicUser | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const payEntry = usePayEntry();
   const tz = e.venue.timezone;
   const notOffered = ALL_FORMATS.filter((f) => !e.formats.includes(f));
   const team = formats.some(isTeam);
@@ -63,14 +65,20 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
   async function pay() {
     setError(null);
     setBusy(true);
+    let entryId: string;
     try {
-      const entry = await createEntry(e.id, formats, team && partner ? partner.username : undefined);
-      // TODO(step 5): open the payment provider's checkout here.
-      router.replace(`/entries/${entry.id}`);
+      entryId = (await createEntry(e.id, formats, team && partner ? partner.username : undefined)).id;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong.");
       setBusy(false);
+      return;
     }
+    // The spot is held now; whatever happens at checkout, the entry page
+    // shows where things stand and can retry the payment.
+    const outcome = await payEntry.pay(entryId);
+    router.replace(
+      "paid" in outcome ? `/entries/${entryId}` : `/entries/${entryId}?payment=${"failed" in outcome ? "failed" : "closed"}`,
+    );
   }
 
   return (
@@ -217,7 +225,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
           className="flex min-h-[54px] flex-1 items-center justify-center gap-2.5 rounded-2xl bg-primary text-base font-semibold text-on-primary disabled:opacity-50"
         >
           <LockIcon className="size-4" />
-          {busy ? "Holding your spot…" : `Pay ${rupees(e.feePaise)}`}
+          {payEntry.busy ? "Paying…" : busy ? "Holding your spot…" : `Pay ${rupees(e.feePaise)}`}
         </button>
       </footer>
 

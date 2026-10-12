@@ -133,6 +133,23 @@ matches separate from events so that can be added without a redesign.
      OTP adapter (Proposed: Razorpay first).
    - The **provider's webhook** confirms the payment, not the browser
      redirect. Webhooks are idempotent: a repeated webhook changes nothing.
+   - **Built (step 5)**, with these readings of the rules:
+     - The page's verify call (signed pair from Checkout) also confirms,
+       but only after the server re-fetches the payment from the provider
+       (and captures it if only authorized). Verify and webhook share one
+       confirmation that locks event → entry → payment, so whichever comes
+       second is a no-op; the webhook still works if the page never returns.
+     - A payment that lands after the hold expired is confirmed if the
+       event still has room (the desk's checks); otherwise, or if the event
+       was cancelled or the player cancelled meanwhile, the entry becomes
+       `refunded` and the payment is refunded automatically.
+     - A second payment for an entry already paid (online or at the desk)
+       is refunded and leaves the entry alone (rule 9).
+     - A refund counts as done once the provider accepts it (Razorpay
+       "processed" or "pending"). One the provider refuses stays
+       `refund_pending` for a retry job that isn't built yet.
+     - Free events (`fee_paise` 0) confirm at once from the pay call, with
+       no payment row, even when no provider is configured.
 4. Once paid, the entry is `confirmed` and joins the pool. The player sees:
    **"You're in. We'll notify you once your match is scheduled."**
 5. **Another match the same day** means buying another entry, with the
@@ -529,7 +546,11 @@ search. `000008` adds `player_ratings` (rows created lazily: no row means
 `schedule_published_at` and `schedule_published_by`. `matches` stores
 `starts_at` and `ends_at` rather than slot minutes, and an exclusion
 constraint (`btree_gist`) keeps a court from holding two matches that
-aren't cancelled at overlapping times. The rest is proposed.
+aren't cancelled at overlapping times. `000009` adds `payments` (below):
+provider and payment IDs instead of `provider_ref`, the provider's IDs
+serving as idempotency keys, plus `refund_id`, `paid_at` and
+`refunded_at`; partial unique indexes allow at most one `paid` payment
+and one open (`created`) order per entry. The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -540,7 +561,7 @@ aren't cancelled at overlapping times. The rest is proposed.
 | `event_judges` | event_id, user_id, added_at (built, `000006`) |
 | `entries` | id, event_id, user_id, kind (`open` or `locked`), formats, partner_user_id (open doubles), challenge_id (locked), source (`online` or `walk_in`), status (`pending_payment`, `confirmed`, `standby`, `scheduled`, `cancelled`, `refunded`, `no_show`), hold_expires_at, match_id (once scheduled), created_at. **Not** unique on (event_id, user_id): a player can hold several entries |
 | `event_checkins` | event_id, user_id, checked_in_at. One check-in per player per event covers all their entries |
-| `payments` | id, entry_id, user_id, provider, provider_ref, amount_paise, currency, status, kind (`online` or `offline`), recorded_by (admin, for offline), idempotency_key. One successful payment per entry |
+| `payments` | id, entry_id, user_id, provider (`razorpay`, `fake`, `offline`), kind (`online` or `offline`), provider_order_id, provider_payment_id, amount_paise, currency, status (`created`, `paid`, `failed`, `refund_pending`, `refunded`), recorded_by (admin, for offline), refund_id, paid_at, refunded_at (built, `000009`). One paid payment per entry |
 | `challenges` | id, event_id, format, challenger_id, opponent_id, preferred_start, status (`pending`, `accepted`, `scheduled`, `declined`, `withdrawn`, `expired`, `failed`), expires_at, pay_by, responded_at, created_at. At most one open challenge per pair per event |
 | `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side. Every match is rated; a voided match is reversed (section 9) |
 | `match_sides` | match_id, side (`A` or `B`), user_id, entry_id |
@@ -713,16 +734,22 @@ Every scheduled match is rated (Decided), so these are too.
    events (location, else Bangalore) with the rating strip,
    `/events/{id}`, `/events/{id}/join` (formats, partner search) and
    `/entries/{id}` (the held spot, then "finding your rival" once paid).
-5. The payment adapter (Razorpay) and webhooks, with a fake provider for
-   local development, the same way OTP has a console provider.
+5. **Backend done:** the payment adapter (Razorpay) and webhooks, with a
+   fake provider for local development, the same way OTP has a console
+   provider (migration `000009`, `PAYMENT_PROVIDER`): `POST
+   /api/me/entries/{id}/pay` (the checkout, or confirmed at once when
+   free), `POST /api/payments/verify`, `POST /api/payments/webhook`.
+   `mark-paid` now records an offline payment, and cancelling an entry
+   closes its open order. Readings of the rules are in 4.2. The checkout
+   screen is next.
 6. **Done:** player ratings (starting at 1200), matches, and the
    matching algorithm, with its preview and publish steps (migration
    `000008`): `POST /api/admin/events/{id}/schedule/preview` and
    `/publish`, `GET /api/admin/events/{id}/schedule` (the saved one),
    `GET /api/admin/events/{id}/entries`, `GET /api/me/matches`,
-   and `POST /api/admin/entries/{id}/mark-paid`, a stopgap that confirms an
-   entry paid offline at the desk until step 5's webhook confirms online
-   payments. `-seed-demo` adds 16 rated demo players with paid entries and
+   and `POST /api/admin/entries/{id}/mark-paid`, which confirms an entry
+   paid offline at the desk (since step 5 it also records the offline
+   payment). `-seed-demo` adds 16 rated demo players with paid entries and
    two judges in "Midweek Rally Night". Ratings don't change after a match
    until step 9. Screens: admin "Entries & schedule"
    (`/admin/events/{id}/schedule`: mark paid, preview, publish, the saved
