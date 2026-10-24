@@ -223,14 +223,43 @@ matches separate from events so that can be added without a redesign.
 
 ## 6. Matching algorithm
 
-**When it runs** (Proposed):
+**When it runs** (Decided with Ayush: rolling runs; not built yet):
 
-- **A main run at the registration cutoff,** e.g. 2 hours before the start
-  (configurable). It matches the open entries and builds the schedule.
-- **Small extra runs afterwards** for walk-ins, no-shows and spare slots.
-  These follow rule 7: they only fill gaps.
-- Admins can also run it by hand from admin mode, to preview the schedule
-  and publish it.
+1. **Joining opens when the event is published,** normally 4 days before
+   it starts (question 21).
+2. **Each category has its own pool and its own maximum,** e.g. men's
+   singles or mixed doubles (question 20).
+3. **A category that reaches its maximum closes to new entries and is
+   matched straight away,** from the full pool.
+4. **24 hours before the start,** every category that isn't full is
+   matched with what it has, **complete matches only**: pairs in singles,
+   groups of four in doubles and mixed. Anyone left over stays in the pool,
+   and the unused slots stay open for more players.
+5. **In the last 24 hours** joining stays open (question 22), and the
+   matcher runs **every 4 hours** per category. Each run matches the new
+   entries and anyone left over, but only where there are good enough
+   opponents (question 23). The rest wait for the next run.
+6. **On the spot:** players can join at the venue (walk-ins, section 7).
+   Rather than waiting up to 4 hours, a confirmed walk-in triggers a run of
+   its own (Proposed).
+7. **Admins can edit fixtures by hand:** pair players, replace a player,
+   move a match (section 10).
+8. **Every run only fills gaps** (rule 7): published matches never move
+   unless an admin moves them. **Each run publishes its matches straight
+   away;** players see them in the app.
+9. **Whoever is still unmatched when the event ends is refunded
+   automatically.**
+
+Why rolling runs: players in a full category get certainty early, and
+late joiners can still play. The cost is that early runs pair from a
+smaller pool, and late joiners get the slots that are left, so their
+preferred time is more often missed.
+
+**Running safely:** the runs are a background job inside the server. With
+several servers on one database (developers sharing the hosted Postgres),
+only one may run at a time. The job takes a Postgres advisory lock, and
+it's switched on by a setting that is off by default for local
+development.
 
 **What it receives:**
 
@@ -266,9 +295,34 @@ matches separate from events so that can be added without a redesign.
    - if still unmatched at the end, they're **refunded automatically**
      (Proposed).
 
+**Location isn't an input** (Decided). Players already chose the event by
+distance (section 4.1), and every match is at the event's venue.
+
+**Preferred time** (Decided, not built):
+
+- Joining asks for an optional **preferred 30-minute window** inside the
+  event's time, e.g. 19:00–19:30, on the half hour in the venue's time
+  zone. Left empty, any time suits.
+- It's **soft**: the matcher tries to start the match inside its players'
+  windows, and falls back to any free slot rather than leaving them out.
+- A match has two to four players. Among the slots that meet every hard
+  rule, it takes the one whose start suits the **most** of their windows,
+  then the earliest.
+- Pairing doesn't look at windows: windows only choose the slot.
+- Stored on the entry, e.g. `entries.preferred_start` (the window's start;
+  NULL for any time).
+
+**Priorities when goals conflict** (Decided):
+
+1. Hard rules, never broken: no overlapping or back-to-back slots for a
+   player, a free court, a free judge who isn't playing, and `max_matches`.
+2. Close ratings: who plays whom.
+3. Preferred time: which slot they get.
+
 **Slots and judges:**
 
-- Fill slots in time order.
+- Fill slots in time order, except where a preferred time picks a later
+  slot.
 - **A player with several entries never gets overlapping or back-to-back
   slots** (Decided): leave at least one slot between their matches,
   including any challenge match they already have.
@@ -318,7 +372,8 @@ the rules above leave room):
   their load counts. The event's own count towards `max_matches`. Locked
   entries are never in the pool.
 - **Publishing** happens once per event in version 1, and not when the
-  pool makes no match at all. Later runs that only fill gaps (walk-ins,
+  pool makes no match at all. The rolling runs above replace this when
+  they're built: each run publishes the matches it adds. Later runs that only fill gaps (walk-ins,
   no-shows, entries confirmed after publishing) are future work.
 
 ---
@@ -887,3 +942,9 @@ Every scheduled match is rated (Decided), so these are too.
 | 15 | ~~Rated challenges between the same two players~~ | Decided: every scheduled match is rated, with no cap |
 | 16 | ~~Doubles and mixed challenges~~ | Decided: singles only in version 1 |
 | 17 | Most entries one player can hold in one event | 3 |
+| 18 | ~~When a full event's schedule is made, does it publish at once or wait for an admin?~~ | Decided: every run publishes at once; admins can edit fixtures afterwards (section 6) |
+| 19 | ~~When an event hasn't filled, when is the schedule made?~~ | Decided: rolling runs, matched at 24 h before with complete matches only, then every 4 h (section 6) |
+| 20 | Categories: men's singles, women's singles, men's doubles, women's doubles and mixed doubles? That needs a gender on the profile, a maximum per category, and one category per entry | Open |
+| 21 | Does the admin publish about 4 days before by hand, or does the event open on its own at a set time? | Admin publishes; the form suggests 4 days before |
+| 22 | When does joining finally close: at the start (on-the-spot entries are walk-ins), or some time before? | At the start |
+| 23 | "Good enough" opponents: within 200 rating points? At the last run, pair the closest even if further apart (flagged), or leave them unmatched and refund? | Within 200; the last run pairs the closest and flags it |
