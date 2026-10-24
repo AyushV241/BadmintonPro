@@ -5,12 +5,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { BottomNav } from "@/components/app/BottomNav";
-import { EventRow, NextEventCard, joinable } from "@/components/events/EventBits";
-import { Switch } from "@/components/form/Switch";
-import { ArrowRightIcon, LogoutIcon, ShieldIcon } from "@/components/icons";
-import { BottomSheet, Button, useBottomSheet } from "@/components/ui";
-import { setAdminMode, useAdminMode } from "@/lib/adminMode";
-import { logout, me, type User } from "@/lib/api";
+import { EventRow, NextEventCard, joinable, myStatusIn } from "@/components/events/EventBits";
+import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
+import { useAdminMode } from "@/lib/adminMode";
+import { me, myEntries, myMatches, nearbyPlayers, type Entry, type MyMatch, type Player, type User } from "@/lib/api";
+import { currentPosition } from "@/lib/location";
 import { initials } from "@/lib/initials";
 import { STARTING_RATING } from "@/lib/rating";
 import { useNearbyEvents } from "@/lib/useNearbyEvents";
@@ -42,8 +41,68 @@ function RatingStrip() {
   );
 }
 
+/** Up to three players to challenge, active at venues near the player. */
+function ChallengeNearby({ fallbackLat, fallbackLng }: { fallbackLat: number | null; fallbackLng: number | null }) {
+  const [players, setPlayers] = useState<Player[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    currentPosition()
+      .then((p) => ({ lat: p.coords.latitude, lng: p.coords.longitude }))
+      // No location: the nearest event's venue stands in for "near you".
+      .catch(() => (fallbackLat !== null && fallbackLng !== null ? { lat: fallbackLat, lng: fallbackLng } : null))
+      .then((point) => (point ? nearbyPlayers(point.lat, point.lng) : []))
+      .then((list) => !cancelled && setPlayers(list.slice(0, 3)))
+      .catch(() => !cancelled && setPlayers([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [fallbackLat, fallbackLng]);
+
+  if (!players || players.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold tracking-[-0.02em]">Challenge people near you</h2>
+        <Link href="/challenge/new" className="flex min-h-11 items-center text-[13px] font-semibold text-muted">
+          See all
+        </Link>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {players.map((p) => (
+          <Link
+            key={p.id}
+            href={`/challenge/new?username=${encodeURIComponent(p.username)}`}
+            aria-label={`Challenge ${p.name}, rated ${p.rating}`}
+            className="flex flex-col items-center gap-1.5 rounded-[20px] border border-line bg-surface px-2 py-3"
+          >
+            <Avatar text={initials(p.name, p.username)} color={avatarColors.blue} size={36} />
+            <span className="flex max-w-full flex-col items-center">
+              <span className="max-w-full truncate text-sm font-semibold">{p.name.split(" ")[0] || p.username}</span>
+              <span className="text-xs text-muted">{p.rating}</span>
+            </span>
+            <span className="flex min-h-7 items-center rounded-full bg-primary px-3 text-xs font-semibold text-on-primary">
+              Challenge
+            </span>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function NearbyEvents() {
   const nearby = useNearbyEvents();
+  // What the player has already joined, so cards say "You're in" instead of Join.
+  const [mine, setMine] = useState<{ entries: Entry[]; matches: MyMatch[] }>({ entries: [], matches: [] });
+  useEffect(() => {
+    Promise.all([myEntries(), myMatches()])
+      .then(([entries, matches]) => setMine({ entries, matches }))
+      .catch(() => {
+        /* cards just offer Join */
+      });
+  }, []);
+  const statusOf = (eventId: string) => myStatusIn(eventId, mine.entries, mine.matches);
 
   if (nearby.state === "loading") {
     return (
@@ -73,8 +132,9 @@ function NearbyEvents() {
   }
   return (
     <>
-      <NextEventCard event={next} />
+      <NextEventCard event={next} mine={statusOf(next.id)} />
       <RatingStrip />
+      <ChallengeNearby fallbackLat={next.venue.lat} fallbackLng={next.venue.lng} />
       {more.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="text-lg font-semibold tracking-[-0.02em]">
@@ -82,7 +142,7 @@ function NearbyEvents() {
           </h2>
           <div className="flex flex-col gap-3">
             {more.map((e) => (
-              <EventRow key={e.id} event={e} />
+              <EventRow key={e.id} event={e} mine={statusOf(e.id)} />
             ))}
           </div>
         </section>
@@ -91,24 +151,10 @@ function NearbyEvents() {
   );
 }
 
-function ContactLine({ value, verified }: { value: string; verified: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-surface px-4 py-3">
-      <span className="truncate text-[15px]">{value}</span>
-      <span
-        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${verified ? "bg-lime text-ink" : "bg-line text-muted"}`}
-      >
-        {verified ? "Verified" : "Unverified"}
-      </span>
-    </div>
-  );
-}
-
 /** Home: the screen you land on after signing in. */
 export default function HomePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
-  const account = useBottomSheet("account");
   const adminMode = useAdminMode();
 
   useEffect(() => {
@@ -125,13 +171,6 @@ export default function HomePage() {
       })
       .catch(() => router.replace("/login"));
   }, [router]);
-
-  async function handleSignOut() {
-    await logout().catch(() => {
-      /* the cookie is cleared server-side; move on regardless */
-    });
-    router.replace("/login");
-  }
 
   if (!user) {
     return (
@@ -154,9 +193,9 @@ export default function HomePage() {
               Hey, <span className="font-semibold">{firstName}</span>
             </h1>
           </div>
-          <button type="button" onClick={account.open} aria-label="Your account" className="rounded-full">
+          <Link href="/profile" aria-label="Your profile" className="rounded-full">
             <Avatar text={avatarText} color={avatarColors.peach} size={44} />
-          </button>
+          </Link>
         </header>
 
         <div className="flex flex-col gap-5 px-5">
@@ -179,40 +218,8 @@ export default function HomePage() {
         </div>
       </div>
 
-      <BottomNav active="home" onProfile={account.open} />
+      <BottomNav active="home" />
 
-      <BottomSheet
-        hash="account"
-        title="Your account"
-        footer={
-          <Button variant="secondary" size="lg" fullWidth startIcon={<LogoutIcon />} onClick={handleSignOut}>
-            Sign out
-          </Button>
-        }
-      >
-        <div className="flex flex-col gap-4 pb-2">
-          <div className="flex items-center gap-3">
-            <Avatar text={avatarText} color={avatarColors.peach} size={56} />
-            <div className="flex flex-col">
-              <span className="text-lg font-semibold tracking-[-0.02em]">{user.name}</span>
-              <span className="text-sm text-muted">@{user.username}</span>
-            </div>
-          </div>
-          {user.phone && <ContactLine value={user.phone} verified={user.phoneVerified} />}
-          {user.email && <ContactLine value={user.email} verified={user.emailVerified} />}
-          <p className="text-xs text-muted">
-            You sign in with {user.signInMethod === "google" ? "Google" : "your phone number"}.
-          </p>
-          <p className="pt-2 text-[11px] font-semibold tracking-[0.14em] text-muted uppercase">Settings</p>
-          {/* Open to everyone for now; later only people with the admin role see it. */}
-          <Switch
-            checked={adminMode}
-            onChange={setAdminMode}
-            label="Admin mode"
-            description="Create venues and events, and assign judges."
-          />
-        </div>
-      </BottomSheet>
     </main>
   );
 }

@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRightIcon, ClockIcon, PinIcon } from "@/components/icons";
-import type { BadmintonEvent, EventFormat } from "@/lib/api";
+import type { BadmintonEvent, Entry, EntryStatus, EventFormat, MyMatch } from "@/lib/api";
 import { clockTime, dateTile, rupees } from "@/lib/eventTime";
 import courtPhoto from "@/public/images/court-night.jpg";
 
@@ -25,6 +25,50 @@ export function AccentTitle({ title }: { title: string }) {
       {words.join(" ")} <span className="text-lime">{last}</span>
     </>
   );
+}
+
+/** Where the signed-in player stands in an event, when they've joined it. */
+export type MyEventStatus = {
+  /** "Finding your perfect match", "Match at 8:30 PM", "Pay to confirm"… */
+  label: string;
+  /** The same, short enough for the photo card's button. */
+  short: string;
+  /** The button: "View entry", "View match", "Pay to confirm". */
+  cta: string;
+  href: string;
+  /** "action": something to do (pay); "in": nothing to do but wait or play. */
+  tone: "in" | "action";
+  /** Entries still counting towards the 3-per-event limit. */
+  live: number;
+};
+
+const LIVE: EntryStatus[] = ["confirmed", "standby", "scheduled"];
+
+/**
+ * The player's standing in an event from their entries (and matches, for
+ * the time). A scheduled match beats a paid entry, which beats a held one.
+ * Null when they have nothing live there.
+ */
+export function myStatusIn(eventId: string, entries: Entry[], matches: MyMatch[] = []): MyEventStatus | null {
+  const mine = entries.filter((e) => e.event.id === eventId);
+  const isLive = (e: Entry) => LIVE.includes(e.status) || (e.status === "pending_payment" && !e.holdExpired);
+  const live = mine.filter(isLive).length;
+  if (live === 0) return null;
+
+  const scheduled = mine.find((e) => e.status === "scheduled");
+  if (scheduled) {
+    const match = matches.find((m) => m.event?.id === eventId && ["scheduled", "ready", "live"].includes(m.status));
+    const label = match ? `Match at ${clockTime(match.startsAt, match.venue.timezone)}` : "Match scheduled";
+    return { label, short: label, cta: "View match", href: "/matches", tone: "in", live };
+  }
+  const paid = mine.find((e) => e.status === "confirmed");
+  if (paid) {
+    return { label: "Finding your perfect match", short: "Finding your match", cta: "View entry", href: `/entries/${paid.id}`, tone: "in", live };
+  }
+  const standby = mine.find((e) => e.status === "standby");
+  if (standby) return { label: "On standby", short: "On standby", cta: "View entry", href: `/entries/${standby.id}`, tone: "in", live };
+  const held = mine.find((e) => e.status === "pending_payment" && !e.holdExpired)!;
+  return { label: "Pay to confirm", short: "Pay to confirm", cta: "Pay to confirm", href: `/entries/${held.id}`, tone: "action", live };
 }
 
 /** Whether a player can still join: before the cutoff, with room left. */
@@ -57,19 +101,19 @@ export function CourtPhoto({ className = "" }: { className?: string }) {
 }
 
 /** The photo card for the next event near you. */
-export function NextEventCard({ event }: { event: BadmintonEvent }) {
+export function NextEventCard({ event, mine }: { event: BadmintonEvent; mine?: MyEventStatus | null }) {
   const tz = event.venue.timezone;
   return (
     <Link
-      href={`/events/${event.id}`}
-      aria-label={`${event.title}, view and join`}
+      href={mine ? mine.href : `/events/${event.id}`}
+      aria-label={mine ? `${event.title}: ${mine.label}` : `${event.title}, view and join`}
       className="relative block h-[230px] overflow-hidden rounded-[26px] bg-ink text-white"
     >
       <CourtPhoto />
       <div className="absolute inset-0 flex flex-col justify-between p-[18px]">
         <span className="flex items-center gap-2 self-start rounded-full bg-ink/55 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] uppercase">
           <span className="size-[7px] rounded-full bg-lime shadow-[0_0_0_3px_rgba(226,251,108,0.25)]" />
-          Next near you · {spotsLabel(event)}
+          {mine ? (mine.tone === "action" ? "Spot held" : "You're in") : `Next near you · ${spotsLabel(event)}`}
         </span>
         <div className="flex flex-col gap-1.5">
           <p className="text-[11px] font-semibold tracking-[0.14em] text-lime uppercase">{formatList(event.formats)}</p>
@@ -89,8 +133,8 @@ export function NextEventCard({ event }: { event: BadmintonEvent }) {
                 </span>
               )}
             </span>
-            <span className="flex min-h-11 items-center gap-1.5 rounded-full bg-lime px-4 text-sm font-semibold text-ink">
-              Join · {rupees(event.feePaise)}
+            <span className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full bg-lime px-4 text-sm font-semibold text-ink">
+              {mine ? mine.short : `Join · ${rupees(event.feePaise)}`}
               <ArrowRightIcon className="size-4" />
             </span>
           </div>
@@ -111,7 +155,7 @@ export function DateTile({ iso, timeZone }: { iso: string; timeZone: string }) {
   );
 }
 
-export function EventRow({ event }: { event: BadmintonEvent }) {
+export function EventRow({ event, mine }: { event: BadmintonEvent; mine?: MyEventStatus | null }) {
   const tz = event.venue.timezone;
   return (
     <Link
@@ -126,8 +170,9 @@ export function EventRow({ event }: { event: BadmintonEvent }) {
           <span className="truncate">{event.venue.name}</span>
           {event.distanceKm !== undefined && <span className="shrink-0">· {event.distanceKm.toFixed(1)} km</span>}
         </p>
-        <p className={`text-xs font-semibold ${joinable(event) ? "text-lime-text" : "text-muted"}`}>
-          {formatList(event.formats)} · {joinable(event) ? spotsLabel(event) : event.spotsLeft > 0 ? "Joining closed" : "Full"}
+        <p className={`text-xs font-semibold ${mine || joinable(event) ? "text-lime-text" : "text-muted"}`}>
+          {formatList(event.formats)} ·{" "}
+          {mine ? mine.label : joinable(event) ? spotsLabel(event) : event.spotsLeft > 0 ? "Joining closed" : "Full"}
         </p>
       </div>
       <span className="self-start pt-1 text-[13px] font-semibold">{clockTime(event.startsAt, tz)}</span>

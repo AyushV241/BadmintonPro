@@ -10,7 +10,9 @@ import (
 
 // The matching algorithm: turns an event's confirmed open entries into
 // matches, each with a court, a time and a judge. See
-// docs/design/events-and-matches.md, section 6.
+// docs/design/events-and-matches.md, section 6. Matches already fixed (a
+// challenge's, section 12) come in as taken court time and busy players and
+// judges; they are never moved (rule 7).
 //
 // runMatcher is a pure function: no database, no clock, no randomness. The
 // same input gives the same schedule whatever order its slices come in, and
@@ -73,6 +75,34 @@ type MatcherInput struct {
 	Courts   []Court
 	JudgeIDs []string
 	Entries  []MatcherEntry
+	// Fixed are matches already scheduled that the new ones must work
+	// around: their court time is taken, and their players and judge are
+	// busy. The event's own count towards MaxMatches.
+	Fixed []FixedMatch
+}
+
+// FixedMatch is a match that already has its court and time: a scheduled
+// challenge in this event, or another event's match on one of its courts.
+type FixedMatch struct {
+	CourtID          string
+	StartsAt, EndsAt time.Time
+	// UserIDs are its players; JudgeID is "" without a judge.
+	UserIDs []string
+	JudgeID string
+	// OtherEvent is true for another event's match on a shared court: it
+	// takes court time but not one of this event's max_matches.
+	OtherEvent bool
+}
+
+// ownFixed is how many of the fixed matches are the event's own.
+func ownFixed(fixed []FixedMatch) int {
+	n := 0
+	for _, f := range fixed {
+		if !f.OtherEvent {
+			n++
+		}
+	}
+	return n
 }
 
 // ProposedPlayer is one player on a side, with the rating used to match them.
@@ -216,6 +246,10 @@ func runMatcher(in MatcherInput) Schedule {
 
 	out := m.schedule(matches)
 	m.assignJudges(out)
+	if n := ownFixed(in.Fixed); n > 0 {
+		m.warn("%d %s", n, plural(n, "match is already scheduled and keeps its court and time",
+			"matches are already scheduled and keep their courts and times"))
+	}
 
 	slices.SortFunc(m.standby, func(a, b StandbyEntry) int { return cmp.Compare(a.EntryID, b.EntryID) })
 	if out == nil {
@@ -737,7 +771,11 @@ func courtOrder(courts []Court) []Court {
 //   - none of its players has another match closer than the shorter of the
 //     two slot lengths (section 6, Decided: never overlapping or
 //     back-to-back, at least one slot between);
-//   - the event's max_matches hasn't been reached.
+//   - the event's max_matches hasn't been reached, counting the event's
+//     fixed matches.
+//
+// Fixed matches (MatcherInput.Fixed) are in place before the first turn:
+// their court time is taken and their players are busy, with the same gap.
 //
 // The order matches take their turn in: matches whose players have the most
 // matches go first (they are the hardest to fit), then doubles and mixed
@@ -777,6 +815,14 @@ func (m *matcher) schedule(matches []pending) []ProposedMatch {
 
 	courtBusy := map[string][]busy{}
 	playerBusy := map[string][]busy{}
+	for _, f := range m.in.Fixed {
+		b := busy{start: f.StartsAt, end: f.EndsAt}
+		courtBusy[f.CourtID] = append(courtBusy[f.CourtID], b)
+		for _, u := range f.UserIDs {
+			playerBusy[u] = append(playerBusy[u], b)
+		}
+	}
+	fixed := ownFixed(m.in.Fixed)
 	var placed []ProposedMatch
 	var capped, unfit int
 	for _, p := range order {
@@ -787,7 +833,7 @@ func (m *matcher) schedule(matches []pending) []ProposedMatch {
 				}
 			}
 		}
-		if len(placed) >= m.in.MaxMatches {
+		if fixed+len(placed) >= m.in.MaxMatches {
 			capped++
 			benchAll()
 			continue
@@ -890,8 +936,8 @@ func overlapsAny(stretches []busy, start, end time.Time) bool {
 
 // assignJudges gives each match, in time order, a judge from the event's
 // list who isn't playing in it, isn't playing or judging another match at an
-// overlapping time, and has judged the fewest matches so far (then lowest
-// user ID), which spreads the load. A match with no such judge keeps an
+// overlapping time (fixed ones included), and has judged the fewest matches
+// so far (fixed ones included, then lowest user ID), which spreads the load. A match with no such judge keeps an
 // empty JudgeID and the flag FlagNoJudge for the admin (section 6).
 func (m *matcher) assignJudges(matches []ProposedMatch) {
 	judges := slices.Clone(m.in.JudgeIDs)
@@ -902,6 +948,15 @@ func (m *matcher) assignJudges(matches []ProposedMatch) {
 	}
 
 	playing := map[string][]busy{}
+	judging := map[string][]busy{}
+	for _, f := range m.in.Fixed {
+		for _, u := range f.UserIDs {
+			playing[u] = append(playing[u], busy{f.StartsAt, f.EndsAt})
+		}
+		if f.JudgeID != "" {
+			judging[f.JudgeID] = append(judging[f.JudgeID], busy{f.StartsAt, f.EndsAt})
+		}
+	}
 	for _, mt := range matches {
 		for _, s := range mt.Sides {
 			for _, pl := range s.Players {
@@ -909,7 +964,6 @@ func (m *matcher) assignJudges(matches []ProposedMatch) {
 			}
 		}
 	}
-	judging := map[string][]busy{}
 	for i := range matches {
 		mt := &matches[i]
 		chosen := ""

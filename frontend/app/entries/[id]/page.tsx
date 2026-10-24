@@ -9,17 +9,7 @@ import { ApiError, cancelEntry, me, myEntries, type Entry } from "@/lib/api";
 import { formatWhen, rupees } from "@/lib/eventTime";
 import { PAIRING_GAP, STARTING_RATING } from "@/lib/rating";
 import { usePayEntry } from "@/lib/usePayEntry";
-
-/** Seconds until `iso`, ticking every second; 0 once it has passed. */
-function useSecondsLeft(iso: string | null) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!iso) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [iso]);
-  return iso ? Math.max(0, Math.round((Date.parse(iso) - now) / 1000)) : 0;
-}
+import { useSecondsLeft } from "@/lib/useSecondsLeft";
 
 function Step({ state, title, detail }: { state: "done" | "now" | "todo"; title: string; detail?: string }) {
   return (

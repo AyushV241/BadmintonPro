@@ -7,8 +7,19 @@ import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { BottomNav } from "@/components/app/BottomNav";
 import { DateTile, formatName } from "@/components/events/EventBits";
 import { directionsUrl } from "@/components/events/VenueMap";
-import { CheckIcon, PinIcon } from "@/components/icons";
-import { ApiError, me, myEntries, myMatches, type Entry, type MatchSide, type MyMatch, type User } from "@/lib/api";
+import { CheckIcon, PinIcon, SwordsIcon } from "@/components/icons";
+import {
+  ApiError,
+  me,
+  myChallenges,
+  myEntries,
+  myMatches,
+  type Challenge,
+  type Entry,
+  type MatchSide,
+  type MyMatch,
+  type User,
+} from "@/lib/api";
 import { clockTime, dateTile, rupees } from "@/lib/eventTime";
 import { initials } from "@/lib/initials";
 
@@ -145,7 +156,7 @@ function WaitingRow({ entry }: { entry: Entry }) {
   const tz = entry.event.venue.timezone;
   const held = entry.status === "pending_payment" && !entry.holdExpired;
   const [label, dot] =
-    entry.status === "standby" ? ["Standby", "bg-[#f5a524]"] : held ? ["Pay to confirm", "bg-danger"] : ["Pairing", "bg-[#f5a524]"];
+    entry.status === "standby" ? ["Standby", "bg-[#f5a524]"] : held ? ["Pay to confirm", "bg-danger"] : ["Finding match", "bg-[#f5a524]"];
   return (
     <Link href={`/entries/${entry.id}`} className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3">
       <DateTile iso={entry.event.startsAt} timeZone={tz} />
@@ -163,16 +174,48 @@ function WaitingRow({ entry }: { entry: Entry }) {
   );
 }
 
+/** What an open challenge needs next, from the player's side. */
+function challengeNext(c: Challenge): { label: string; urgent: boolean } {
+  if (c.status === "pending") return c.role === "opponent" ? { label: "Respond", urgent: true } : { label: "Waiting", urgent: false };
+  const paid = c.myEntry ? ["confirmed", "scheduled"].includes(c.myEntry.status) : false;
+  return paid ? { label: "They pay", urgent: false } : { label: "Pay", urgent: true };
+}
+
+function ChallengeRow({ challenge: c }: { challenge: Challenge }) {
+  const them = c.role === "challenger" ? c.opponent : c.challenger;
+  const tz = c.event.venue.timezone;
+  const next = challengeNext(c);
+  return (
+    <Link href={`/challenges/${c.id}`} className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3">
+      <Avatar text={initials(them.name, them.username)} color={colorFor(them.id)} size={52} />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-[15px] font-semibold">
+          {c.role === "opponent" ? `${them.name.split(" ")[0]} challenged you` : `You challenged ${them.name.split(" ")[0]}`}
+        </span>
+        <span className="truncate text-xs text-muted">
+          {dateTile(c.preferredStart, tz).weekday} {dateTile(c.preferredStart, tz).day} {dateTile(c.preferredStart, tz).month} · around{" "}
+          {clockTime(c.preferredStart, tz)} · {c.event.venue.name}
+        </span>
+      </span>
+      <span
+        className={`shrink-0 rounded-full px-2.5 py-1.5 text-xs font-semibold ${next.urgent ? "bg-lime text-ink" : "bg-background text-muted"}`}
+      >
+        {next.label}
+      </span>
+    </Link>
+  );
+}
+
 type Tab = "upcoming" | "history";
 
 function MatchesView({ user }: { user: User }) {
   const [tab, setTab] = useState<Tab>("upcoming");
-  const [data, setData] = useState<{ matches: MyMatch[]; entries: Entry[] } | null>(null);
+  const [data, setData] = useState<{ matches: MyMatch[]; entries: Entry[]; challenges: Challenge[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([myMatches(), myEntries()])
-      .then(([matches, entries]) => setData({ matches, entries }))
+    Promise.all([myMatches(), myEntries(), myChallenges().catch(() => [] as Challenge[])])
+      .then(([matches, entries, challenges]) => setData({ matches, entries, challenges }))
       .catch((err) => setError(err instanceof ApiError ? err.message : "Couldn't load your matches."));
   }, []);
 
@@ -182,18 +225,29 @@ function MatchesView({ user }: { user: User }) {
   const waiting =
     data?.entries.filter(
       (e) =>
-        e.status === "confirmed" ||
+        e.kind === "open" &&
+        (e.status === "confirmed" ||
         e.status === "standby" ||
-        (e.status === "pending_payment" && !e.holdExpired),
+          (e.status === "pending_payment" && !e.holdExpired)),
     ) ?? [];
+  const openChallenges = data?.challenges.filter((c) => c.status === "pending" || c.status === "accepted") ?? [];
   const [next, ...later] = upcoming;
 
   return (
     <main className="min-h-dvh bg-background text-foreground">
       <div className="mx-auto flex w-full max-w-[480px] flex-col gap-4 px-5 pt-6 pb-36">
-        <header className="flex flex-col gap-1.5">
-          <p className="text-[11px] font-semibold tracking-[0.14em] text-muted uppercase">Your games</p>
-          <h1 className="text-[32px] leading-tight font-medium tracking-[-0.04em]">Matches</h1>
+        <header className="flex items-end justify-between gap-3">
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[11px] font-semibold tracking-[0.14em] text-muted uppercase">Your games</p>
+            <h1 className="text-[32px] leading-tight font-medium tracking-[-0.04em]">Matches</h1>
+          </div>
+          <Link
+            href="/challenge/new"
+            className="flex min-h-11 items-center gap-2 rounded-[14px] border border-line bg-surface px-3.5 text-sm font-semibold"
+          >
+            <SwordsIcon className="size-4" />
+            Challenge
+          </Link>
         </header>
 
         <div role="tablist" aria-label="Matches" className="grid grid-cols-2 gap-1 rounded-2xl bg-line/60 p-1">
@@ -232,6 +286,14 @@ function MatchesView({ user }: { user: User }) {
                   </Link>
                 </p>
               </div>
+            )}
+            {openChallenges.length > 0 && (
+              <section className="flex flex-col gap-2.5">
+                <h2 className="text-[17px] font-semibold tracking-[-0.02em]">Challenges</h2>
+                {openChallenges.map((c) => (
+                  <ChallengeRow key={c.id} challenge={c} />
+                ))}
+              </section>
             )}
             {later.length > 0 && (
               <section className="flex flex-col gap-2.5">

@@ -93,6 +93,7 @@ func (a *API) handlePayEntry(w http.ResponseWriter, r *http.Request) {
 			writePaymentError(w, err, "confirm the entry")
 			return
 		}
+		a.refundAll(ctx, out.Refunds) // a free challenge has none, but stay general
 		writeJSON(w, http.StatusOK, entryResponse{Entry: out.Entry})
 		return
 	}
@@ -248,6 +249,7 @@ func (a *API) applyPayment(ctx context.Context, p payments.Payment) (PaymentOutc
 	if out.Refund != nil {
 		a.refund(ctx, *out.Refund)
 	}
+	a.refundAll(ctx, out.Refunds)
 	return out, nil
 }
 
@@ -272,6 +274,20 @@ func (a *API) refund(ctx context.Context, pr PendingRefund) {
 		return
 	}
 	log.Printf("payments: refunded %s (%s) as %s", pr.PaymentID, pr.ProviderPaymentID, rf.ID)
+}
+
+// refundAll refunds each payment, after the transaction that marked them
+// refund_pending has committed. Without a payment provider they stay
+// refund_pending for the retry job (see refund).
+func (a *API) refundAll(ctx context.Context, refunds []PendingRefund) {
+	for _, pr := range refunds {
+		if a.paymentProvider == nil {
+			log.Printf("payments: can't refund %s (%s): payments aren't set up; left refund_pending",
+				pr.PaymentID, pr.ProviderPaymentID)
+			continue
+		}
+		a.refund(ctx, pr)
+	}
 }
 
 // handlePaymentWebhook is the provider's server-to-server notice that a

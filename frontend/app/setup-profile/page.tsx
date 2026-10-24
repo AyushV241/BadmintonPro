@@ -17,6 +17,7 @@ import {
   type ProfileUpdate,
   type User,
 } from "@/lib/api";
+import { useFormErrors, type FieldErrors } from "@/lib/useFormErrors";
 
 /**
  * "Set up your profile", shown after the first sign-in:
@@ -24,13 +25,38 @@ import {
  * - Google sign-ins: name, username, and an optional phone verified by a code.
  *   Their email comes from Google and isn't asked for.
  */
+type ProfileField = "name" | "username" | "email";
+
+const USERNAME = /^[a-z0-9_.]{3,20}$/i;
+// Enough to catch typos; the server has the final say.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validate(name: string, username: string, email: string, askEmail: boolean): FieldErrors<ProfileField> {
+  const errors: FieldErrors<ProfileField> = {};
+  if (!name.trim()) errors.name = "Enter your name.";
+  if (!username.trim()) errors.username = "Pick a username.";
+  else if (!USERNAME.test(username.trim())) errors.username = "3–20 letters, numbers, _ or . only.";
+  if (askEmail && email.trim() && !EMAIL.test(email.trim())) errors.email = "That email doesn't look right.";
+  return errors;
+}
+
+/** The field a server error is about. */
+function fieldForServerError(err: ApiError): ProfileField | null {
+  if (err.status === 409) return "username"; // taken
+  const m = err.message.toLowerCase();
+  if (m.includes("username")) return "username";
+  if (m.includes("email")) return "email";
+  if (m.includes("name")) return "name";
+  return null;
+}
+
 export default function SetupProfilePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
-  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const { errors, field, show, clear } = useFormErrors<ProfileField>();
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [changingPhone, setChangingPhone] = useState(false);
@@ -53,8 +79,8 @@ export default function SetupProfilePage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!user) return;
-    setUsernameError(null);
     setFormError(null);
+    if (show(validate(name, username, email, !user.emailVerified && user.signInMethod === "phone"))) return;
     setSaving(true);
 
     const profile: ProfileUpdate = { name, username };
@@ -65,11 +91,9 @@ export default function SetupProfilePage() {
       await updateProfile(profile);
       router.replace("/dashboard");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setUsernameError(err.message);
-      } else {
-        setFormError(err instanceof ApiError ? err.message : "Something went wrong.");
-      }
+      const key = err instanceof ApiError ? fieldForServerError(err) : null;
+      if (key) show({ [key]: (err as ApiError).message });
+      else setFormError(err instanceof ApiError ? err.message : "Something went wrong.");
       setSaving(false);
     }
   }
@@ -125,48 +149,50 @@ export default function SetupProfilePage() {
           </div>
         </div>
 
-        <form id="profile" onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
+        <form id="profile" onSubmit={handleSubmit} noValidate className="mt-8 flex flex-col gap-5">
           {formError && (
             <p role="alert" className="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
               {formError}
             </p>
           )}
 
-          <div className="flex flex-col gap-2">
+          <div {...field("name")} className="flex flex-col gap-2">
             <FieldLabel htmlFor="profile-name">Full name</FieldLabel>
             <Input
               id="profile-name"
               value={name}
-              onChange={setName}
+              onChange={(v) => {
+                setName(v);
+                clear("name");
+              }}
               autoComplete="name"
               placeholder="Arjun Kapoor"
               maxLength={100}
               startAdornment={<UserIcon className="size-5" />}
-              required
+              error={errors.name}
             />
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div {...field("username")} className="flex flex-col gap-2">
             <FieldLabel htmlFor="profile-username">Username</FieldLabel>
             <Input
               id="profile-username"
               value={username}
               onChange={(v) => {
                 setUsername(v);
-                setUsernameError(null);
+                clear("username");
               }}
               autoComplete="username"
               placeholder="arjunk"
               startAdornment="@"
               maxLength={20}
-              error={usernameError ?? undefined}
+              error={errors.username}
               helperText="How other players find you. 3–20 letters, numbers, _ or ."
-              required
             />
           </div>
 
           {phoneAccount && (
-            <div className="flex flex-col gap-2">
+            <div {...field("email")} className="flex flex-col gap-2">
               <FieldLabel htmlFor="profile-email" optional>
                 Email
               </FieldLabel>
@@ -174,11 +200,15 @@ export default function SetupProfilePage() {
                 id="profile-email"
                 type="email"
                 value={email}
-                onChange={setEmail}
+                onChange={(v) => {
+                  setEmail(v);
+                  clear("email");
+                }}
                 autoComplete="email"
                 placeholder="you@example.com"
                 startAdornment={<MailIcon className="size-5" />}
                 helperText="For contact only. You'll still sign in with your phone."
+                error={errors.email}
               />
             </div>
           )}

@@ -41,6 +41,8 @@ func writeEntryError(w http.ResponseWriter, err error, action string) {
 		writeError(w, http.StatusConflict, "this event is full")
 	case errors.Is(err, ErrNoMatchesLeft):
 		writeError(w, http.StatusConflict, "this event has no matches left to give out")
+	case errors.Is(err, ErrEntryInChallenge):
+		writeError(w, http.StatusConflict, "this entry is part of a challenge; withdraw the challenge instead")
 	case errors.Is(err, ErrEntryNotCancellable):
 		writeError(w, http.StatusConflict, "only an entry waiting for payment can be cancelled")
 	default:

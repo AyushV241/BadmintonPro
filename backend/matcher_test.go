@@ -130,7 +130,8 @@ func overlaps(slots []slot, s slot) bool {
 // checkInvariants checks the rules every schedule must keep, whatever the
 // input: every entry is in exactly one match or on standby, no player plays
 // twice too close together or against themselves, courts and judges are
-// never double-booked, everything fits the window and max_matches.
+// never double-booked, everything fits the window and max_matches. Fixed
+// matches count as already there.
 func checkInvariants(t *testing.T, in MatcherInput, s Schedule) {
 	t.Helper()
 	entryUser := map[string]string{}
@@ -141,12 +142,22 @@ func checkInvariants(t *testing.T, in MatcherInput, s Schedule) {
 	for _, e := range s.Standby {
 		seen[e.EntryID]++
 	}
-	if len(s.Matches) > in.MaxMatches {
-		t.Errorf("%d matches, over max_matches %d", len(s.Matches), in.MaxMatches)
+	if len(s.Matches)+ownFixed(in.Fixed) > in.MaxMatches {
+		t.Errorf("%d matches and %d fixed, over max_matches %d", len(s.Matches), ownFixed(in.Fixed), in.MaxMatches)
 	}
 	players := map[string][]slot{}
 	courts := map[string][]slot{}
 	judges := map[string][]slot{}
+	for _, f := range in.Fixed {
+		here := slot{f.StartsAt, f.EndsAt, f.EndsAt.Sub(f.StartsAt)}
+		for _, u := range f.UserIDs {
+			players[u] = append(players[u], here)
+		}
+		courts[f.CourtID] = append(courts[f.CourtID], here)
+		if f.JudgeID != "" {
+			judges[f.JudgeID] = append(judges[f.JudgeID], here)
+		}
+	}
 	validCourt := map[string]bool{}
 	for _, c := range in.Courts {
 		validCourt[c.ID] = true
@@ -1067,6 +1078,22 @@ func randomInput(r *rand.Rand) MatcherInput {
 		}
 	}
 	in.Entries = entriesOf(specs...)
+	// Sometimes a few challenge matches are already fixed, between random
+	// players (who may have open entries too), each on its own court.
+	if r.IntN(2) == 0 {
+		for i := range 1 + r.IntN(3) {
+			start := in.StartsAt.Add(time.Duration(30*r.IntN(6)) * time.Minute)
+			judge := "" // a judge who doesn't play, so the input itself is sound
+			if r.IntN(2) == 0 {
+				judge = in.JudgeIDs[r.IntN(2)]
+			}
+			a, b := fmt.Sprintf("u%02d", r.IntN(players)), fmt.Sprintf("u%02d", players+i)
+			in.Fixed = append(in.Fixed, FixedMatch{
+				CourtID: in.Courts[i].ID, StartsAt: start, EndsAt: start.Add(30 * time.Minute),
+				UserIDs: []string{a, b}, JudgeID: judge,
+			})
+		}
+	}
 	return in
 }
 
@@ -1087,6 +1114,8 @@ func TestMatcherIsDeterministic(t *testing.T) {
 			r.Shuffle(len(shuffled.JudgeIDs), func(i, j int) {
 				shuffled.JudgeIDs[i], shuffled.JudgeIDs[j] = shuffled.JudgeIDs[j], shuffled.JudgeIDs[i]
 			})
+			shuffled.Fixed = slices.Clone(in.Fixed)
+			r.Shuffle(len(shuffled.Fixed), func(i, j int) { shuffled.Fixed[i], shuffled.Fixed[j] = shuffled.Fixed[j], shuffled.Fixed[i] })
 			if got := runMatcher(shuffled); !reflect.DeepEqual(got, want) {
 				t.Fatalf("round %d: a shuffled input gave a different schedule", round)
 			}
@@ -1127,5 +1156,81 @@ func TestMatcherEmpty(t *testing.T) {
 	s := runChecked(t, baseInput())
 	if s.Matches == nil || s.Standby == nil || s.Warnings == nil || len(s.Matches)+len(s.Standby)+len(s.Warnings) != 0 {
 		t.Errorf("schedule = %+v; want empty, non-nil slices", s)
+	}
+}
+
+// --- fixed matches (challenges) ---
+
+func TestFixedMatchesTakeCourtTimeAndPlayers(t *testing.T) {
+	in := baseInput()
+	in.Courts = []Court{{ID: "crt_1", Label: "Court 1"}}
+	in.JudgeIDs = []string{"usr_judge_a", "usr_judge_b"}
+	// A challenge between x and y at 20:00 on the only court, judged by
+	// judge a. x also has an open entry.
+	in.Fixed = []FixedMatch{{
+		CourtID: "crt_1", StartsAt: matcherStart, EndsAt: matcherStart.Add(30 * time.Minute),
+		UserIDs: []string{"x", "y"}, JudgeID: "usr_judge_a",
+	}}
+	in.Entries = entriesOf(
+		entrySpec{id: "ent_x", user: "x", formats: "s", rating: 1500},
+		entrySpec{id: "ent_p", user: "p", formats: "s", rating: 1490},
+		entrySpec{id: "ent_q", user: "q", formats: "s", rating: 1300},
+		entrySpec{id: "ent_r", user: "r", formats: "s", rating: 1290},
+	)
+	s := runChecked(t, in)
+	assertMatchups(t, s, "ent_q v ent_r", "ent_x v ent_p")
+	// q–r takes the first free time, 20:30. x needs a 30-minute break after
+	// the challenge, so plays at 21:00, not 20:30.
+	if !s.Matches[0].StartsAt.Equal(matcherStart.Add(30*time.Minute)) ||
+		!s.Matches[1].StartsAt.Equal(matcherStart.Add(time.Hour)) {
+		t.Errorf("matches at %v and %v, want 20:30 and 21:00", s.Matches[0].StartsAt, s.Matches[1].StartsAt)
+	}
+	// Judge a already judges one, so b takes the first new match.
+	if s.Matches[0].JudgeID != "usr_judge_b" || s.Matches[1].JudgeID != "usr_judge_a" {
+		t.Errorf("judges %q and %q", s.Matches[0].JudgeID, s.Matches[1].JudgeID)
+	}
+	if !slices.ContainsFunc(s.Warnings, func(w string) bool { return strings.Contains(w, "1 match is already scheduled") }) {
+		t.Errorf("warnings = %v", s.Warnings)
+	}
+}
+
+func TestFixedMatchesCountTowardsMaxMatches(t *testing.T) {
+	in := fourSinglesOnTwoCourts()
+	in.MaxMatches = 2
+	in.Fixed = []FixedMatch{{CourtID: "crt_2", StartsAt: matcherStart, EndsAt: matcherStart.Add(30 * time.Minute), UserIDs: []string{"x", "y"}}}
+	s := runChecked(t, in)
+	if len(s.Matches) != 1 || len(s.Standby) != 2 {
+		t.Errorf("matches = %v, standby = %v; want one match beside the fixed one", matchups(s), s.Standby)
+	}
+
+	// Another event's match on a shared court takes its time but none of
+	// this event's matches.
+	in.Fixed[0].OtherEvent = true
+	s = runChecked(t, in)
+	if len(s.Matches) != 2 {
+		t.Fatalf("matches = %v", matchups(s))
+	}
+	for _, m := range s.Matches {
+		if m.CourtID == "crt_2" && m.StartsAt.Before(matcherStart.Add(30*time.Minute)) {
+			t.Errorf("a match uses crt_2 at %v, taken by another event", m.StartsAt)
+		}
+	}
+	if slices.ContainsFunc(s.Warnings, func(w string) bool { return strings.Contains(w, "already scheduled") }) {
+		t.Errorf("another event's match counted as this event's: %v", s.Warnings)
+	}
+}
+
+func TestJudgeBusyInAFixedMatch(t *testing.T) {
+	in := fourSinglesOnTwoCourts()
+	in.Courts = []Court{{ID: "crt_1", Label: "Court 1"}, {ID: "crt_2", Label: "Court 2"}, {ID: "crt_3", Label: "Court 3"}}
+	in.JudgeIDs = []string{"usr_judge_a"}
+	// The only judge plays a challenge at 20:00 on Court 3.
+	in.Fixed = []FixedMatch{{CourtID: "crt_3", StartsAt: matcherStart, EndsAt: matcherStart.Add(30 * time.Minute),
+		UserIDs: []string{"usr_judge_a", "y"}}}
+	s := runChecked(t, in)
+	for _, m := range s.Matches {
+		if m.StartsAt.Equal(matcherStart) && m.JudgeID != "" {
+			t.Errorf("judge %s judges at 20:00 while playing", m.JudgeID)
+		}
 	}
 }

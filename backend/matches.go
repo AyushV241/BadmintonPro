@@ -130,6 +130,9 @@ type PlayerMatch struct {
 	// MySide is the signed-in player's side, "A" or "B".
 	MySide     string  `json:"mySide"`
 	WinnerSide *string `json:"winnerSide"`
+	// ChallengeID is the challenge the match was fixed for, or null for a
+	// match the matcher made.
+	ChallengeID *string `json:"challengeId"`
 }
 
 // MatchStore is what the schedule, the desk and a player's matches need.
@@ -158,18 +161,34 @@ type MatchStore interface {
 	// order they joined. It returns ErrNoSuchEvent.
 	ListEventEntries(ctx context.Context, eventID string) ([]AdminEntry, error)
 
-	// MarkEntryPaid confirms a pending_payment entry paid offline at the
-	// desk, recording which admin did it. An expired hold is fine as long as
+	// MarkEntryPaid confirms a pending_payment open entry paid offline at
+	// the desk, recording which admin did it (a challenge's locked entries
+	// are paid in the app: ErrEntryInChallenge). An expired hold is fine as long as
 	// the event still has room, checked with the event row locked as
 	// CreateEntry does. It records the event's fee as an offline payments
 	// row in the same transaction (none for a free event). It returns
-	// ErrNoSuchEntry, ErrEntryNotPending, ErrEventNotOpen, ErrEventOver,
-	// ErrEntryLimit, ErrEventFull or ErrNoMatchesLeft.
+	// ErrNoSuchEntry, ErrEntryInChallenge, ErrEntryNotPending,
+	// ErrEventNotOpen, ErrEventOver, ErrEntryLimit, ErrEventFull or
+	// ErrNoMatchesLeft.
 	MarkEntryPaid(ctx context.Context, entryID, adminID string, now time.Time) (AdminEntry, error)
 
 	// ListUserMatches returns the user's matches in every status, soonest
 	// first.
 	ListUserMatches(ctx context.Context, userID string) ([]PlayerMatch, error)
+
+	// PlayerStats returns the user's rating in each discipline (1200 where
+	// they have none yet) and their finished matches.
+	PlayerStats(ctx context.Context, userID string) (PlayerStats, error)
+}
+
+// PlayerStats is what a player's profile shows about their game.
+type PlayerStats struct {
+	// Ratings has every discipline: singles, doubles and mixed.
+	Ratings map[string]int `json:"ratings"`
+	// Played counts completed matches; walkovers and cancelled ones don't
+	// count (they change no rating either).
+	Played int `json:"played"`
+	Won    int `json:"won"`
 }
 
 // scheduleData is an event's matcher input plus what's needed to show the

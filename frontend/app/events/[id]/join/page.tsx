@@ -6,11 +6,13 @@ import { useEffect, useState } from "react";
 import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { DateTile, formatName } from "@/components/events/EventBits";
 import { PlayerSearch } from "@/components/events/PlayerSearch";
+import { FieldError } from "@/components/form/FieldError";
 import { CheckIcon, ChevronLeftIcon, ClockIcon, LockIcon, ShieldCheckIcon, TicketIcon, UserIcon, XIcon } from "@/components/icons";
 import { BottomSheet, useBottomSheet } from "@/components/ui";
 import { ApiError, createEntry, getEvent, me, type BadmintonEvent, type EventFormat, type PublicUser } from "@/lib/api";
 import { formatWindow, rupees } from "@/lib/eventTime";
 import { initials } from "@/lib/initials";
+import { useFormErrors } from "@/lib/useFormErrors";
 import { usePayEntry } from "@/lib/usePayEntry";
 import { PAIRING_GAP, STARTING_RATING } from "@/lib/rating";
 
@@ -52,24 +54,36 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const payEntry = usePayEntry();
+  const { errors, field, show, clear } = useFormErrors<"formats" | "partner">();
   const tz = e.venue.timezone;
   const notOffered = ALL_FORMATS.filter((f) => !e.formats.includes(f));
   const team = formats.some(isTeam);
 
   function toggle(f: EventFormat) {
-    const next = formats.includes(f) ? formats.filter((x) => x !== f) : [...formats, f];
-    setFormats(next);
-    if (!next.some(isTeam)) setPartner(null);
+    // Built on the latest formats, so two quick taps both count.
+    setFormats((current) => (current.includes(f) ? current.filter((x) => x !== f) : [...current, f]));
+    clear("formats");
+  }
+
+  // Doubles and mixed gone: no partner to keep.
+  if (!team && partner) {
+    setPartner(null);
+    clear("partner");
   }
 
   async function pay() {
     setError(null);
+    if (show({ formats: formats.length === 0 ? "Pick at least one format." : undefined })) return;
     setBusy(true);
     let entryId: string;
     try {
       entryId = (await createEntry(e.id, formats, team && partner ? partner.username : undefined)).id;
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong.");
+      const msg = err instanceof ApiError ? err.message : "Something went wrong.";
+      // A partner problem belongs on the partner row; the rest (full, closed,
+      // rating band) is about the event as a whole.
+      if (err instanceof ApiError && (msg.includes("partner") || msg.includes("@"))) show({ partner: msg });
+      else setError(msg);
       setBusy(false);
       return;
     }
@@ -116,7 +130,13 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
               <p className="text-[11px] font-semibold tracking-[0.14em] text-[#a3a596] uppercase">Formats you&rsquo;ll play</p>
               <p className="text-[13px] text-[#a3a596]">Pick one or more. Your entry gets one match, in one of them.</p>
             </div>
-            <div role="group" aria-label="Formats" className="grid grid-cols-3 gap-2">
+            <div {...field("formats")} className="flex flex-col gap-2">
+            <div
+              role="group"
+              aria-label="Formats"
+              aria-describedby={errors.formats ? "join-formats-error" : undefined}
+              className="grid grid-cols-3 gap-2"
+            >
               {ALL_FORMATS.map((f) => (
                 <FormatChip
                   key={f}
@@ -127,6 +147,8 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
                 />
               ))}
             </div>
+            <FieldError id="join-formats-error" message={errors.formats} className="text-[#ff9b8c]" />
+            </div>
             {notOffered.length > 0 && (
               <p className="-mt-1.5 text-xs text-[#a3a596]">
                 {notOffered.map(formatName).join(" and ")} {notOffered.length === 1 ? "isn't" : "aren't"} offered at this event.
@@ -134,6 +156,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
             )}
 
             {team && (
+              <div {...field("partner")} className="flex flex-col gap-2">
               <div className="flex items-center gap-3 rounded-2xl bg-white/10 px-3 py-2.5">
                 {partner ? (
                   <Avatar text={initials(partner.name, partner.username)} color={avatarColors.blue} size={36} />
@@ -166,6 +189,8 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
                     Choose
                   </button>
                 )}
+              </div>
+              <FieldError id="join-partner-error" message={errors.partner} className="text-[#ff9b8c]" />
               </div>
             )}
 
@@ -221,7 +246,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
         <button
           type="button"
           onClick={() => void pay()}
-          disabled={busy || formats.length === 0}
+          disabled={busy}
           className="flex min-h-[54px] flex-1 items-center justify-center gap-2.5 rounded-2xl bg-primary text-base font-semibold text-on-primary disabled:opacity-50"
         >
           <LockIcon className="size-4" />
@@ -240,6 +265,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
             label="Search by username"
             onPick={(u) => {
               setPartner(u);
+              clear("partner");
               partnerSheet.close();
             }}
           />

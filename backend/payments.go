@@ -121,6 +121,11 @@ type PaymentOutcome struct {
 	Repeat bool
 	// Refund is set when the payment can't be used and has to be refunded.
 	Refund *PendingRefund
+	// Refunds are further payments to refund that the confirmation caused,
+	// for a challenge's locked entry: the challenge expired, or no slot was
+	// left for its match, so every paid entry in it is refunded (this
+	// payment's included when it was applied first).
+	Refunds []PendingRefund
 }
 
 // PaymentStore is what payments need. Only PostgresStore implements it.
@@ -153,7 +158,11 @@ type PaymentStore interface {
 	//     the event still has room, and its event is published and not over;
 	//   - otherwise the entry is refunded and the payment must be (Refund);
 	//   - a second payment for an entry already paid for is refunded and
-	//     leaves the entry alone.
+	//     leaves the entry alone;
+	//   - for a challenge's locked entry, the hold is the challenge's
+	//     deadline: a challenge past it expires in the same transaction
+	//     (Refunds), and confirming the second of its two entries fixes the
+	//     match (fixChallengeMatch).
 	//
 	// A free event's confirmation (no payment) confirms a payable entry,
 	// with PayableEntry's errors otherwise. It returns ErrNoSuchPayment for

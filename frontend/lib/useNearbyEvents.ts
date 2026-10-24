@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { listEvents, type BadmintonEvent } from "@/lib/api";
+import { currentPosition } from "@/lib/location";
 
 /** Used when the browser can't or won't share a location. */
 const FALLBACK_CITY = "bangalore";
@@ -11,16 +12,6 @@ type Nearby =
   | { state: "loading" }
   | { state: "ready"; events: BadmintonEvent[]; byDistance: boolean }
   | { state: "error"; message: string };
-
-function position(): Promise<GeolocationPosition> {
-  return new Promise((resolve, reject) => {
-    if (!("geolocation" in navigator)) {
-      reject(new Error("no geolocation"));
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 8000, maximumAge: 10 * 60 * 1000 });
-  });
-}
 
 /**
  * Upcoming events near the player: within 10 km when the browser shares the
@@ -35,7 +26,7 @@ export function useNearbyEvents(): Nearby {
       let events: BadmintonEvent[];
       let byDistance = true;
       try {
-        const { coords } = await position();
+        const { coords } = await currentPosition();
         events = await listEvents({ lat: coords.latitude, lng: coords.longitude, radiusKm: RADIUS_KM });
         if (events.length === 0) throw new Error("nothing in range");
       } catch {

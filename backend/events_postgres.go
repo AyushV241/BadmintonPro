@@ -53,12 +53,17 @@ func scanEvent(row pgx.Row, extra ...any) (Event, error) {
 	return e, nil
 }
 
-// distanceSQL is the great-circle (haversine) distance in km from the point
-// ($lat, $lng) to the venue v; NULL when either is missing. LEAST guards asin
-// against rounding just above 1.
-const distanceSQL = `6371 * 2 * asin(least(1, sqrt(
-	power(sin(radians(v.lat - $6::float8) / 2), 2) +
-	cos(radians($6::float8)) * cos(radians(v.lat)) * power(sin(radians(v.lng - $7::float8) / 2), 2))))`
+// distanceFrom is the great-circle (haversine) distance in km from the
+// point (lat, lng), two query parameters such as "$6", to the venue v; NULL
+// when either is missing. LEAST guards asin against rounding just above 1.
+func distanceFrom(lat, lng string) string {
+	return `6371 * 2 * asin(least(1, sqrt(
+	power(sin(radians(v.lat - ` + lat + `::float8) / 2), 2) +
+	cos(radians(` + lat + `::float8)) * cos(radians(v.lat)) * power(sin(radians(v.lng - ` + lng + `::float8) / 2), 2))))`
+}
+
+// distanceSQL is distanceFrom the list's location parameters.
+var distanceSQL = distanceFrom("$6", "$7")
 
 func (s *PostgresStore) ListEvents(ctx context.Context, q EventQuery) ([]Event, bool, error) {
 	if q.Limit < 1 {

@@ -77,7 +77,7 @@ export function AdminShell({
           <div className="flex flex-col gap-3 rounded-[22px] border border-line bg-surface p-5">
             <p className="text-[15px] font-semibold">Admin mode is off</p>
             <p className="text-sm text-muted">
-              Turn it on to create venues and events. You can switch it off any time from your account.
+              Turn it on to create venues and events. You can switch it off any time from your Profile.
             </p>
             <Button variant="accent" size="lg" fullWidth onClick={() => setAdminMode(true)}>
               Turn on admin mode
@@ -103,6 +103,21 @@ export function StatusChip({ status }: { status: EventStatus }) {
     >
       {status}
     </span>
+  );
+}
+
+/**
+ * Pinned to the bottom of the screen, for a page's main action. Leaves room
+ * below the page's content so nothing hides behind it.
+ */
+export function StickyFooter({ children }: { children: ReactNode }) {
+  return (
+    <>
+      <div aria-hidden="true" className="h-20" />
+      <div className="fixed bottom-0 left-1/2 z-10 w-full max-w-[480px] -translate-x-1/2 border-t border-line bg-background/95 px-5 pt-3 pb-[max(20px,env(safe-area-inset-bottom))] backdrop-blur">
+        {children}
+      </div>
+    </>
   );
 }
 

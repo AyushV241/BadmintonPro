@@ -77,8 +77,8 @@ func loadScheduleData(ctx context.Context, q rowsQuerier, eventID string, lock b
 		d.users[j.ID] = j
 	}
 
-	// Locked entries (challenges, step 7) will come with their slot already
-	// fixed and be passed to the matcher as taken; only open ones exist yet.
+	// Only open entries are matched. Locked ones (challenges) get their slot
+	// when both players have paid; their matches come in as Fixed below.
 	forUpdateEntries := ""
 	if lock {
 		forUpdateEntries = " FOR UPDATE OF en"
@@ -119,6 +119,12 @@ func loadScheduleData(ctx context.Context, q rowsQuerier, eventID string, lock b
 		for _, f := range formatOrder {
 			e.Ratings[f] = ratings.of(e.UserID, f)
 		}
+	}
+
+	// Matches already scheduled (challenges, rule 7) and other events' on
+	// these courts: taken court time, busy players and judges.
+	if in.Fixed, err = loadFixedMatches(ctx, q, eventID, in.StartsAt, in.EndsAt); err != nil {
+		return d, err
 	}
 	return d, nil
 }
@@ -464,12 +470,16 @@ func (s *PostgresStore) MarkEntryPaid(ctx context.Context, entryID, adminID stri
 			eventID).Scan(&status, &endsAt, &capacity, &maxMatches, &fee, &currency); err != nil {
 			return fmt.Errorf("lock event: %w", err)
 		}
-		var entryStatus, userID string
-		if err := tx.QueryRow(ctx, `SELECT status, user_id FROM entries WHERE id = $1 FOR UPDATE`,
-			entryID).Scan(&entryStatus, &userID); err != nil {
+		var entryStatus, userID, kind string
+		if err := tx.QueryRow(ctx, `SELECT status, user_id, kind FROM entries WHERE id = $1 FOR UPDATE`,
+			entryID).Scan(&entryStatus, &userID, &kind); err != nil {
 			return fmt.Errorf("lock entry: %w", err)
 		}
 		switch {
+		// A challenge's entries are paid in the app: confirming one fixes
+		// the match, and a failed challenge refunds through the provider.
+		case kind == EntryLocked:
+			return ErrEntryInChallenge
 		case entryStatus != EntryPendingPayment:
 			return ErrEntryNotPending
 		case status != EventPublished:
@@ -526,13 +536,15 @@ func (s *PostgresStore) ListUserMatches(ctx context.Context, userID string) ([]P
 			e.id, e.title,
 			c.id, c.label,
 			`+venueColumns+`,
-			j.id, COALESCE(j.name, ''), COALESCE(j.username, '')
+			j.id, COALESCE(j.name, ''), COALESCE(j.username, ''),
+			ch.id
 		FROM match_sides me
 		JOIN matches m ON m.id = me.match_id
 		LEFT JOIN events e ON e.id = m.event_id
 		JOIN courts c ON c.id = m.court_id
 		JOIN venues v ON v.id = c.venue_id
 		LEFT JOIN users j ON j.id = m.judge_id
+		LEFT JOIN challenges ch ON ch.match_id = m.id
 		WHERE me.user_id = $1
 		ORDER BY m.starts_at, m.id
 		LIMIT $2`, userID, userMatchesLimit)
@@ -548,7 +560,8 @@ func (s *PostgresStore) ListUserMatches(ctx context.Context, userID string) ([]P
 			&eventID, &eventTitle,
 			&m.Court.ID, &m.Court.Label,
 			&v.ID, &v.Name, &v.Address, &v.City, &v.Lat, &v.Lng, &v.Timezone,
-			&judgeID, &judge.Name, &judge.Username)
+			&judgeID, &judge.Name, &judge.Username,
+			&m.ChallengeID)
 		if eventID != nil {
 			m.Event = &MatchEvent{ID: *eventID, Title: *eventTitle}
 		}
@@ -605,4 +618,32 @@ func (s *PostgresStore) ListUserMatches(ctx context.Context, userID string) ([]P
 		return nil, fmt.Errorf("match sides: %w", err)
 	}
 	return matches, nil
+}
+
+func (s *PostgresStore) PlayerStats(ctx context.Context, userID string) (PlayerStats, error) {
+	stats := PlayerStats{Ratings: map[string]int{FormatSingles: startingRating, FormatDoubles: startingRating, FormatMixed: startingRating}}
+	rows, err := s.pool.Query(ctx, `SELECT discipline, rating FROM player_ratings WHERE user_id = $1`, userID)
+	if err != nil {
+		return PlayerStats{}, fmt.Errorf("load ratings: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var discipline string
+		var rating int
+		if err := rows.Scan(&discipline, &rating); err != nil {
+			return PlayerStats{}, fmt.Errorf("load ratings: %w", err)
+		}
+		stats.Ratings[discipline] = rating
+	}
+	if err := rows.Err(); err != nil {
+		return PlayerStats{}, fmt.Errorf("load ratings: %w", err)
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE m.winner_side = ms.side)
+		FROM match_sides ms JOIN matches m ON m.id = ms.match_id
+		WHERE ms.user_id = $1 AND m.status = 'completed'`, userID,
+	).Scan(&stats.Played, &stats.Won); err != nil {
+		return PlayerStats{}, fmt.Errorf("count matches: %w", err)
+	}
+	return stats, nil
 }

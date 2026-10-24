@@ -12,7 +12,7 @@ Each rule below is tagged as one of:
   unless it's revisited.
 - **Open:** not decided yet. Ask before building anything that depends on it.
 
-Last updated 2026-10-11.
+Last updated 2026-10-12.
 
 ---
 
@@ -312,6 +312,11 @@ the rules above leave room):
 - **Judges** are assigned in time order: a judge not playing in or during
   the match and not judging another at the same time, with the fewest
   matches so far (then lowest user ID). None free: no judge, flagged.
+- **Matches already fixed** (scheduled challenges, and other events'
+  matches on the event's courts) are passed in, never moved: their court
+  time is taken, their players keep the gap, their judges are busy and
+  their load counts. The event's own count towards `max_matches`. Locked
+  entries are never in the pool.
 - **Publishing** happens once per event in version 1, and not when the
   pool makes no match at all. Later runs that only fill gaps (walk-ins,
   no-shows, entries confirmed after publishing) are future work.
@@ -492,7 +497,7 @@ change_A   = round(K × (result_A - expected_A))
   only requires being signed in; later it will check a `role_assignments`
   table. Only that function changes. **While it's open to everyone, anyone
   signed in can create events on whatever database the server uses.**
-- **The toggle (built):** "Admin mode" in the account sheet on Home. It's
+- **The toggle (built):** "Admin mode" in Settings on the Profile page. It's
   remembered per browser and only changes what the app shows; the server
   decides access.
 
@@ -550,7 +555,12 @@ aren't cancelled at overlapping times. `000009` adds `payments` (below):
 provider and payment IDs instead of `provider_ref`, the provider's IDs
 serving as idempotency keys, plus `refund_id`, `paid_at` and
 `refunded_at`; partial unique indexes allow at most one `paid` payment
-and one open (`created`) order per entry. The rest is proposed.
+and one open (`created`) order per entry. `000010` adds `challenges`
+(below, with `match_id` and `updated_at`; no separate `pay_by`, since
+`expires_at` is the one deadline) and `entries.challenge_id`, with a check
+that locked entries have one and open entries don't. A partial unique index
+on (event, the pair in either order) allows one open (`pending` or
+`accepted`) challenge per pair per event. The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -562,7 +572,7 @@ and one open (`created`) order per entry. The rest is proposed.
 | `entries` | id, event_id, user_id, kind (`open` or `locked`), formats, partner_user_id (open doubles), challenge_id (locked), source (`online` or `walk_in`), status (`pending_payment`, `confirmed`, `standby`, `scheduled`, `cancelled`, `refunded`, `no_show`), hold_expires_at, match_id (once scheduled), created_at. **Not** unique on (event_id, user_id): a player can hold several entries |
 | `event_checkins` | event_id, user_id, checked_in_at. One check-in per player per event covers all their entries |
 | `payments` | id, entry_id, user_id, provider (`razorpay`, `fake`, `offline`), kind (`online` or `offline`), provider_order_id, provider_payment_id, amount_paise, currency, status (`created`, `paid`, `failed`, `refund_pending`, `refunded`), recorded_by (admin, for offline), refund_id, paid_at, refunded_at (built, `000009`). One paid payment per entry |
-| `challenges` | id, event_id, format, challenger_id, opponent_id, preferred_start, status (`pending`, `accepted`, `scheduled`, `declined`, `withdrawn`, `expired`, `failed`), expires_at, pay_by, responded_at, created_at. At most one open challenge per pair per event |
+| `challenges` | id, event_id, format (`singles` only for now), challenger_id, opponent_id, preferred_start, status (`pending`, `accepted`, `scheduled`, `declined`, `withdrawn`, `expired`, `failed`), expires_at (the one deadline), responded_at, match_id (once fixed), created_at, updated_at. At most one open challenge per pair per event (built, `000010`) |
 | `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side. Every match is rated; a voided match is reversed (section 9) |
 | `match_sides` | match_id, side (`A` or `B`), user_id, entry_id |
 | `match_points` | match_id, seq, side, kind (`point` or `undo`), client_id, created_at. Unique on (match_id, seq) and (match_id, client_id) |
@@ -603,7 +613,7 @@ match.
 4. Once accepted, a **locked entry is created for each player**, and
    **both pay** the event's entry fee, through the same payment flow as
    section 4.2.
-5. Once both have paid, the **match is fixed straight away**: the free slot
+5. **Only once both have paid** (Decided), the **match is fixed straight away**: the free slot
    closest to the preferred time (the earlier one on a tie), a court, and a
    judge from the event's judges. Both players are told the venue, court,
    date, time and judge.
@@ -612,7 +622,9 @@ match.
 players to challenge, each with their rating, in place of the old weekly
 activity chart. "Near you" means players with recent entries at venues near
 the player, closest rating first (Proposed). It's built with challenges
-(build step 7); until then Home shows only the player's rating.
+(build step 7); until then Home shows only the player's rating. The
+backend is built: `GET /api/players/nearby` (entries that aren't cancelled
+from the last 60 days, Proposed).
 
 **Rules** (Proposed unless marked):
 
@@ -622,15 +634,18 @@ the player, closest rating first (Proposed). It's built with challenges
   offers the format; nobody challenges themselves; neither player is over
   the per-event entry limit; and there's at most one open challenge
   between the same two players for the same event.
-- **Expiry.** An unanswered challenge expires after 24 hours or at the
-  event's registration cutoff, whichever comes first.
+- **A 4-hour deadline** (Decided). From the moment a challenge is sent,
+  the opponent must accept and both players must pay within 4 hours, or
+  before the event's registration cutoff if that comes sooner. One
+  deadline covers everything; there's no separate payment window.
 - **Holding the spot.** Accepting creates both locked entries as
-  `pending_payment`, in the same transaction as the capacity check. They
-  count as two entries against `capacity` and one match against
-  `max_matches`, so the event can't fill up while they pay. Both must pay
-  within 2 hours of accepting, and before the registration cutoff.
-- **Only one pays.** The challenge fails and the payer is refunded
-  automatically (Open: or turn their entry into an open one instead).
+  `pending_payment`, in the same transaction as the capacity check, held
+  until the challenge's deadline. They count as two entries against
+  `capacity` and one match against `max_matches`, so the event can't fill
+  up while they pay.
+- **Not both paid by the deadline** (Decided): the challenge expires and
+  anyone who paid is refunded automatically. The entry is never turned
+  into an open one.
 - **Every match is paid for** (Decided). A player who already has an open
   entry in the event still pays for the challenge: it's a separate entry
   and a separate match.
@@ -652,6 +667,39 @@ the player, closest rating first (Proposed). It's built with challenges
 **Statuses:** `pending` → `accepted` → `scheduled`, or it ends as
 `declined`, `withdrawn`, `expired` or `failed` (payment not completed, the
 event cancelled, or no slot left).
+
+**Built (step 7, backend)**, with these readings of the rules (Proposed):
+
+- **Sending** also needs room in the event for two entries and one match,
+  though nothing is held until the opponent accepts. The preferred start is
+  cut to the minute and must leave a singles slot inside the event's window.
+- **Accepting** rechecks every rule under the event row lock, as joining
+  does. A rule that fails leaves the challenge `pending`; the opponent can
+  still decline it.
+- **Withdrawing**: the challenger while `pending` or `accepted`; the
+  opponent once they've accepted (before that, they decline). A challenge's
+  entries can't be cancelled on their own, or marked paid at the desk: they
+  are paid in the app, so a refund can go back through the provider.
+- **The deadline** is enforced three ways: a sweep every 30 seconds, when
+  either player reads or acts on the challenge, and when a payment for it
+  lands after the deadline (that payment is refunded too).
+- **Fixing the slot.** The nearest free start to the preferred one can be
+  any minute, not only a multiple of the slot length. Taken time is every
+  match that isn't cancelled on the event's courts (another event's
+  included), and each player's other matches in the event keep the gap of
+  the shorter slot. Among free courts, "Court 1" first. The judge: one of
+  the event's judges who isn't playing or judging at that time, with the
+  fewest matches already, then the lowest user ID. The challenger is side
+  A. Paid entries move straight to `scheduled` with the match.
+- **Both payments at once** take turns on the event row, so exactly one
+  match is made.
+- **An event cancelled** with open challenges: they aren't failed straight
+  away; they expire at their deadline (at the latest the registration
+  cutoff), refunding anyone who paid. Not built: failing them, and
+  refunding scheduled ones, when the event is cancelled.
+- **Recent players** are anyone the player shared a match with (either
+  side) or challenged either way, most recent first: a match by its start,
+  a challenge by when it was sent.
 
 ---
 
@@ -755,7 +803,16 @@ Every scheduled match is rated (Decided), so these are too.
    (`/admin/events/{id}/schedule`: mark paid, preview, publish, the saved
    schedule) and the player's Matches tab (`/matches`). Event pages show
    the venue on a Google map with directions.
-7. Challenges (section 12): request, accept, both pay, fixed slot.
+7. **Backend done:** challenges (section 12): request, accept, both pay,
+   fixed slot (migration `000010`): `POST /api/challenges`, `GET
+   /api/me/challenges`, `GET /api/challenges/{id}`, `POST
+   /api/challenges/{id}/accept`, `/decline` and `/withdraw`, `GET
+   /api/me/recent-players` and `GET /api/players/nearby`. Each player pays
+   their locked entry with `POST /api/me/entries/{id}/pay`; the payment that
+   confirms the second fixes the match, in the same transaction. A sweep
+   every 30 seconds expires challenges past their deadline and refunds. The
+   matcher treats fixed matches as taken. Readings of the rules are in
+   section 12. The screens are next.
 8. Live scoring: the judge console, the point log and server-sent events.
 9. Rating updates, the result screen and the leaderboard.
 10. Walk-ins: QR self-join, the desk with account lookup, the player-card
@@ -780,8 +837,8 @@ Every scheduled match is rated (Decided), so these are too.
 | 10 | Does a walkover change ratings? | No |
 | 11 | Payment provider | Razorpay |
 | 12 | Notification channels after in-app | WhatsApp, then SMS |
-| 13 | A challenge where only one player pays: refund, or turn their entry into an open one? | Refund automatically |
-| 14 | How long do both players have to pay after a challenge is accepted? | 2 hours, and before the registration cutoff |
+| 13 | ~~A challenge where only one player pays~~ | Decided: refunded automatically when the deadline passes |
+| 14 | ~~How long do players have to accept and pay?~~ | Decided: 4 hours from sending the challenge, or the registration cutoff if sooner |
 | 15 | ~~Rated challenges between the same two players~~ | Decided: every scheduled match is rated, with no cap |
 | 16 | ~~Doubles and mixed challenges~~ | Decided: singles only in version 1 |
 | 17 | Most entries one player can hold in one event | 3 |

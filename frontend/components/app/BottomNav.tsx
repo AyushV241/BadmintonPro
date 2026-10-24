@@ -16,13 +16,13 @@ const TABS: Tab[] = [
   { key: "home", label: "Home", Icon: HomeIcon, href: "/dashboard" },
   { key: "matches", label: "Matches", Icon: MatchesIcon, href: "/matches" },
   { key: "rank", label: "Rank", Icon: TrophyIcon },
-  { key: "profile", label: "Profile", Icon: UserIcon },
+  { key: "profile", label: "Profile", Icon: UserIcon, href: "/profile" },
 ];
 
 const tabClass =
   "flex min-h-14 flex-col items-center justify-end gap-[3px] text-[11px] tracking-[-0.01em]";
 
-function TabItem({ tab, active, onClick }: { tab: Tab; active: boolean; onClick?: () => void }) {
+function TabItem({ tab, active }: { tab: Tab; active: boolean }) {
   const content = (
     <>
       <tab.Icon className="size-[22px]" strokeWidth={active ? 2.2 : 1.8} />
@@ -32,13 +32,6 @@ function TabItem({ tab, active, onClick }: { tab: Tab; active: boolean; onClick?
   );
   const state = active ? "font-semibold text-foreground" : "font-medium text-muted";
 
-  if (onClick) {
-    return (
-      <button type="button" onClick={onClick} className={`${tabClass} ${state}`}>
-        {content}
-      </button>
-    );
-  }
   if (tab.href) {
     return (
       <Link href={tab.href} aria-current={active ? "page" : undefined} className={`${tabClass} ${state}`}>
@@ -57,10 +50,10 @@ function TabItem({ tab, active, onClick }: { tab: Tab; active: boolean; onClick?
  * The app's bottom tab bar: Home, Matches, the raised lime Match button, Rank,
  * Profile. Fixed to the bottom of the phone-width column.
  */
-export function BottomNav({ active, onProfile }: { active: NavTab; onProfile?: () => void }) {
+export function BottomNav({ active }: { active: NavTab }) {
   const tab = (key: NavTab) => {
     const t = TABS.find((x) => x.key === key)!;
-    return <TabItem tab={t} active={active === key} onClick={key === "profile" ? onProfile : undefined} />;
+    return <TabItem tab={t} active={active === key} />;
   };
 
   return (

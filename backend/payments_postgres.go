@@ -139,12 +139,14 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 	free := c.OrderID == ""
 	var out PaymentOutcome
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		// Find the entry and its event, without locks yet.
+		// Find the entry, its event and its challenge (locked entries),
+		// without locks yet.
 		entryID, userID := c.EntryID, c.UserID
 		var eventID string
+		var challengeID *string
 		if free {
-			err := tx.QueryRow(ctx, `SELECT event_id FROM entries WHERE id = $1 AND user_id = $2`,
-				entryID, userID).Scan(&eventID)
+			err := tx.QueryRow(ctx, `SELECT event_id, challenge_id FROM entries WHERE id = $1 AND user_id = $2`,
+				entryID, userID).Scan(&eventID, &challengeID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNoSuchEntry
 			}
@@ -153,10 +155,10 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 			}
 		} else {
 			err := tx.QueryRow(ctx, `
-				SELECT p.entry_id, p.user_id, en.event_id
+				SELECT p.entry_id, p.user_id, en.event_id, en.challenge_id
 				FROM payments p JOIN entries en ON en.id = p.entry_id
 				WHERE p.provider = $1 AND p.provider_order_id = $2`, c.Provider, c.OrderID,
-			).Scan(&entryID, &userID, &eventID)
+			).Scan(&entryID, &userID, &eventID, &challengeID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNoSuchPayment
 			}
@@ -165,10 +167,12 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 			}
 		}
 
-		// The event row, then the entry, then the payment: the order
-		// CreateEntry, MarkEntryPaid and PublishSchedule lock in, so the room
-		// check can't go stale, a verify and a webhook for one payment take
-		// turns, and nothing deadlocks.
+		// The event row, then the challenge (for a locked entry), then the
+		// entry, then the payment: the order CreateEntry, MarkEntryPaid,
+		// PublishSchedule and the challenge actions lock in, so the room check
+		// can't go stale, a verify and a webhook for one payment take turns,
+		// both players' payments for one challenge take turns, and nothing
+		// deadlocks.
 		var evStatus, evCurrency string
 		var endsAt time.Time
 		var capacity, maxMatches, fee int
@@ -176,6 +180,22 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 			SELECT status, ends_at, capacity, max_matches, fee_paise, currency FROM events WHERE id = $1 FOR UPDATE`,
 			eventID).Scan(&evStatus, &endsAt, &capacity, &maxMatches, &fee, &evCurrency); err != nil {
 			return fmt.Errorf("lock event: %w", err)
+		}
+		if challengeID != nil {
+			// A challenge past its deadline expires here and now, so this
+			// payment finds its entry cancelled and is refunded; anyone who
+			// already paid is refunded too.
+			ch, err := lockChallengeRow(ctx, tx, *challengeID)
+			if err != nil {
+				return err
+			}
+			if ch.due(c.Now) {
+				refunds, err := endChallenge(ctx, tx, ch, ChallengeExpired, c.Now)
+				if err != nil {
+					return err
+				}
+				out.Refunds = append(out.Refunds, refunds...)
+			}
 		}
 		var entryStatus string
 		var holdExpiresAt *time.Time
@@ -185,13 +205,21 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 		}
 		holdLive := entryStatus == EntryPendingPayment && holdExpiresAt != nil && holdExpiresAt.After(c.Now)
 
+		// confirmEntry confirms the entry and, for a challenge's locked entry,
+		// fixes the match once both players have paid (or fails the
+		// challenge, refunding both, if no slot is left).
 		confirmEntry := func() error {
 			if _, err := tx.Exec(ctx, `
 				UPDATE entries SET status = 'confirmed', confirmed_at = $2, updated_at = now() WHERE id = $1`,
 				entryID, c.Now.UTC()); err != nil {
 				return fmt.Errorf("confirm entry: %w", err)
 			}
-			return nil
+			if challengeID == nil {
+				return nil
+			}
+			refunds, err := fixChallengeMatch(ctx, tx, *challengeID, c.Now)
+			out.Refunds = append(out.Refunds, refunds...)
+			return err
 		}
 		finish := func() error {
 			var err error
@@ -292,8 +320,10 @@ func (s *PostgresStore) ConfirmPayment(ctx context.Context, c PaymentConfirmatio
 
 		// Can the entry still be confirmed? A live hold already counts
 		// towards the event; an expired one has to find room again, as at
-		// the desk.
-		usable := entryStatus == EntryPendingPayment && evStatus == EventPublished && c.Now.Before(endsAt)
+		// the desk. A locked entry's hold is its challenge's deadline, which
+		// is final: past it the challenge has expired (above).
+		usable := entryStatus == EntryPendingPayment && evStatus == EventPublished && c.Now.Before(endsAt) &&
+			(challengeID == nil || holdLive)
 		if usable && !holdLive {
 			err := checkRoom(ctx, tx, eventID, userID, entryID, capacity, maxMatches, c.Now)
 			switch {

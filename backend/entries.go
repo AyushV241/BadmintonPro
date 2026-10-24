@@ -26,7 +26,7 @@ var (
 // Entry kinds, sources and statuses, as stored.
 const (
 	EntryOpen   = "open"
-	EntryLocked = "locked" // from a challenge (step 7); not made yet
+	EntryLocked = "locked" // from a challenge (step 7)
 
 	SourceOnline = "online"
 	SourceWalkIn = "walk_in" // step 10; not made yet
@@ -56,9 +56,12 @@ const (
 // An entry is live, holding a place in its event, while it is confirmed,
 // standby or scheduled, or pending_payment with HoldExpiresAt still ahead.
 type Entry struct {
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Formats []string `json:"formats"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// ChallengeID is the challenge a locked entry belongs to; null for an
+	// open entry.
+	ChallengeID *string  `json:"challengeId"`
+	Formats     []string `json:"formats"`
 	// Partner is the doubles or mixed partner chosen when joining, or nil.
 	Partner *PublicUser `json:"partner"`
 	Source  string      `json:"source"`
@@ -116,8 +119,9 @@ type EntryStore interface {
 	ListUserEntries(ctx context.Context, userID string) ([]Entry, error)
 
 	// CancelEntry cancels the user's own pending_payment entry; the row is
-	// kept. It returns ErrNoSuchEntry (also for someone else's entry) or
-	// ErrEntryNotCancellable.
+	// kept. It returns ErrNoSuchEntry (also for someone else's entry),
+	// ErrEntryInChallenge (a locked entry: withdraw or decline the challenge
+	// instead) or ErrEntryNotCancellable.
 	CancelEntry(ctx context.Context, userID, entryID string) (Entry, error)
 
 	// Paying for an entry, and the confirmation that follows, is

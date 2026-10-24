@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { AccentTitle, CourtPhoto, formatList, spotsLabel } from "@/components/events/EventBits";
+import { AccentTitle, CourtPhoto, formatList, myStatusIn, spotsLabel, type MyEventStatus } from "@/components/events/EventBits";
 import { VenueMap } from "@/components/events/VenueMap";
-import { ArrowRightIcon, CalendarIcon, ChevronLeftIcon, PinIcon, ShieldCheckIcon, TargetIcon } from "@/components/icons";
-import { ApiError, getEvent, type BadmintonEvent } from "@/lib/api";
+import { ArrowRightIcon, CalendarIcon, CheckIcon, ChevronLeftIcon, PinIcon, ShieldCheckIcon, SwordsIcon, TargetIcon } from "@/components/icons";
+import { ApiError, getEvent, myEntries, myMatches, type BadmintonEvent } from "@/lib/api";
 import { clockTime, formatWindow, rupees } from "@/lib/eventTime";
 
 function InfoRow({ icon, title, detail, action }: { icon: ReactNode; title: string; detail: string; action?: ReactNode }) {
@@ -40,7 +40,10 @@ function closedReason(e: BadmintonEvent, now: number): string | null {
   return null;
 }
 
-function EventDetails({ event: e }: { event: BadmintonEvent }) {
+/** Most entries one player can hold in one event (the server enforces it). */
+const MAX_ENTRIES = 3;
+
+function EventDetails({ event: e, mine }: { event: BadmintonEvent; mine: MyEventStatus | null }) {
   const tz = e.venue.timezone;
   const taken = e.capacity - e.spotsLeft;
   const courts = e.courts?.length ?? 0;
@@ -122,23 +125,67 @@ function EventDetails({ event: e }: { event: BadmintonEvent }) {
       </div>
 
       <footer className="fixed bottom-0 left-1/2 z-10 flex w-full max-w-[480px] -translate-x-1/2 items-center justify-between gap-4 border-t border-line bg-surface px-5 pt-3.5 pb-[max(28px,env(safe-area-inset-bottom))]">
-        <div className="flex flex-col">
-          <span className="text-[26px] leading-tight font-semibold tracking-[-0.04em]">{rupees(e.feePaise)}</span>
-          <span className="text-xs text-muted">per entry · one match</span>
-        </div>
-        {/* TODO(step 7): a Challenge button next to Join, as in the design. */}
-        {closed ? (
-          <span className="flex min-h-[54px] items-center rounded-2xl bg-line px-6 text-base font-semibold text-muted">
-            {closed}
-          </span>
+        {mine ? (
+          // Already in: where they stand on its own line, then the actions.
+          <div className="flex w-full flex-col gap-2.5">
+            <p className="flex items-center gap-2 text-[15px] font-semibold">
+              <span
+                className={`flex size-5 shrink-0 items-center justify-center rounded-full ${mine.tone === "action" ? "bg-[#f5a524] text-ink" : "bg-lime text-ink"}`}
+              >
+                <CheckIcon className="size-3" strokeWidth={3} />
+              </span>
+              {mine.label}
+            </p>
+            <div className="flex gap-2">
+              {!closed && mine.tone === "in" && mine.live < MAX_ENTRIES && (
+                <Link
+                  href={`/events/${e.id}/join`}
+                  className="flex min-h-[54px] flex-1 items-center justify-center rounded-2xl border border-line bg-surface text-[15px] font-semibold"
+                >
+                  Join again
+                </Link>
+              )}
+              <Link
+                href={mine.href}
+                className="flex min-h-[54px] flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-primary text-base font-semibold text-on-primary"
+              >
+                {mine.cta}
+                <ArrowRightIcon className="size-[18px]" />
+              </Link>
+            </div>
+          </div>
         ) : (
-          <Link
-            href={`/events/${e.id}/join`}
-            className="flex min-h-[54px] items-center gap-2.5 rounded-2xl bg-primary px-6 text-base font-semibold text-on-primary"
-          >
-            Join
-            <ArrowRightIcon className="size-[18px]" />
-          </Link>
+          <>
+            <div className="flex flex-col">
+              <span className="text-[26px] leading-tight font-semibold tracking-[-0.04em]">{rupees(e.feePaise)}</span>
+              <span className="text-xs text-muted">per entry · one match</span>
+            </div>
+            {closed ? (
+              <span className="flex min-h-[54px] items-center rounded-2xl bg-line px-6 text-base font-semibold text-muted">
+                {closed}
+              </span>
+            ) : (
+              <div className="flex gap-2">
+                {/* Challenges are singles only for now. */}
+                {e.formats.includes("singles") && (
+                  <Link
+                    href={`/challenge/new?event=${e.id}`}
+                    className="flex min-h-[54px] items-center gap-2 rounded-2xl border border-line bg-surface px-4 text-[15px] font-semibold"
+                  >
+                    <SwordsIcon className="size-[17px]" />
+                    Challenge
+                  </Link>
+                )}
+                <Link
+                  href={`/events/${e.id}/join`}
+                  className="flex min-h-[54px] items-center gap-2.5 rounded-2xl bg-primary px-5 text-base font-semibold text-on-primary"
+                >
+                  Join
+                  <ArrowRightIcon className="size-[18px]" />
+                </Link>
+              </div>
+            )}
+          </>
         )}
       </footer>
     </main>
@@ -149,9 +196,16 @@ function EventDetails({ event: e }: { event: BadmintonEvent }) {
 export default function EventPage() {
   const { id } = useParams<{ id: string }>();
   const [event, setEvent] = useState<BadmintonEvent | null>(null);
+  const [mine, setMine] = useState<MyEventStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Signed-in players see where they stand; anyone else just gets nothing here.
+    Promise.all([myEntries(), myMatches()])
+      .then(([entries, matches]) => setMine(myStatusIn(id, entries, matches)))
+      .catch(() => {
+        /* not signed in, or it failed: show Join */
+      });
     getEvent(id)
       .then(setEvent)
       .catch((err) =>
@@ -173,5 +227,5 @@ export default function EventPage() {
       </main>
     );
   }
-  return <EventDetails event={event} />;
+  return <EventDetails event={event} mine={mine} />;
 }

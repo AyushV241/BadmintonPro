@@ -97,7 +97,15 @@ func run() error {
 
 	api := NewAPI(store, providers, phone, cookieSecure).
 		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store).
-		WithPayments(store, paymentProvider)
+		WithPayments(store, paymentProvider).WithChallenges(store)
+
+	// Expires challenges past their deadline and refunds whoever paid,
+	// until shutdown. Reads and actions expire them lazily too.
+	sweeperDone := make(chan struct{})
+	go func() {
+		defer close(sweeperDone)
+		api.sweepChallenges(ctx)
+	}()
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
 		Handler:           api.Routes(),
@@ -118,6 +126,9 @@ func run() error {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	// ctx is done once the server has shut down, so the sweeper is stopping;
+	// let a sweep in progress finish before the store closes.
+	<-sweeperDone
 	log.Print("shut down")
 	return nil
 }

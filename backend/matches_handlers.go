@@ -42,6 +42,8 @@ func writeMatchError(w http.ResponseWriter, err error, action string) {
 		writeError(w, http.StatusConflict, "there's nothing to schedule: the confirmed entries don't make a single match")
 	case errors.Is(err, ErrScheduleCourtClashes):
 		writeError(w, http.StatusConflict, ErrScheduleCourtClashes.Error())
+	case errors.Is(err, ErrEntryInChallenge):
+		writeError(w, http.StatusConflict, "this entry is part of a challenge; the player pays for it in the app")
 	case errors.Is(err, ErrEntryNotPending):
 		writeError(w, http.StatusConflict, "only an entry waiting for payment can be marked paid")
 	case errors.Is(err, ErrEventNotOpen):
@@ -150,4 +152,21 @@ func (a *API) handleListMyMatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, matchesResponse{Matches: matches})
+}
+
+// handleMyStats returns the caller's ratings and finished-match counts, for
+// their profile.
+//
+//	GET /api/me/stats
+func (a *API) handleMyStats(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+	stats, err := a.matches.PlayerStats(r.Context(), user.ID)
+	if err != nil {
+		writeMatchError(w, err, "load your stats")
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }

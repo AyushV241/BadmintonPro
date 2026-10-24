@@ -1,27 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-import { AdminShell, ErrorNote } from "@/components/admin/AdminShell";
-import { MapPreview } from "@/components/events/VenueMap";
+import { AdminShell, ErrorNote, StickyFooter } from "@/components/admin/AdminShell";
 import { FieldLabel } from "@/components/form/FieldLabel";
-import { PinIcon } from "@/components/icons";
+import { PinIcon, PlusIcon } from "@/components/icons";
 import { Button, Input } from "@/components/ui";
-import { ApiError, adminAddCourt, adminCreateVenue, adminListVenues, type AdminVenue } from "@/lib/api";
+import { ApiError, adminAddCourt, adminListVenues, type AdminVenue } from "@/lib/api";
 
 const message = (err: unknown) => (err instanceof ApiError ? err.message : "Something went wrong.");
-
-/** A number input's text, or null when empty or not a number. */
-function decimal(text: string): number | null {
-  const n = Number.parseFloat(text);
-  return Number.isNaN(n) ? null : n;
-}
-
-/** Both coordinates typed and in range: worth showing on a map. */
-function validPoint(lat: string, lng: string) {
-  const a = decimal(lat);
-  const b = decimal(lng);
-  return a !== null && b !== null && Math.abs(a) <= 90 && Math.abs(b) <= 180;
-}
 
 function VenueCard({ venue, onChange }: { venue: AdminVenue; onChange: (v: AdminVenue) => void }) {
   const [label, setLabel] = useState("");
@@ -87,93 +74,6 @@ function VenueCard({ venue, onChange }: { venue: AdminVenue; onChange: (v: Admin
   );
 }
 
-function NewVenueForm({ onCreated }: { onCreated: (v: AdminVenue) => void }) {
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
-  const [city, setCity] = useState("bangalore");
-  const [lat, setLat] = useState("");
-  const [lng, setLng] = useState("");
-  const [courts, setCourts] = useState("4");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const venue = await adminCreateVenue({
-        name,
-        address,
-        city,
-        lat: decimal(lat),
-        lng: decimal(lng),
-        courts: Number.parseInt(courts, 10) || 0,
-      });
-      onCreated(venue);
-      setName("");
-      setAddress("");
-      setLat("");
-      setLng("");
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="flex flex-col gap-4 rounded-[22px] border border-line bg-surface p-4">
-      <h2 className="text-[17px] font-semibold tracking-[-0.02em]">New venue</h2>
-      <div className="flex flex-col gap-2">
-        <FieldLabel htmlFor="venue-name">Name</FieldLabel>
-        <Input id="venue-name" value={name} onChange={setName} placeholder="Koramangala Sports Arena" required />
-      </div>
-      <div className="flex flex-col gap-2">
-        <FieldLabel htmlFor="venue-address" optional>
-          Address
-        </FieldLabel>
-        <Input id="venue-address" value={address} onChange={setAddress} placeholder="80 Feet Road, Koramangala" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-2">
-          <FieldLabel htmlFor="venue-city">City</FieldLabel>
-          <Input id="venue-city" value={city} onChange={setCity} helperText="e.g. bangalore" required />
-        </div>
-        <div className="flex flex-col gap-2">
-          <FieldLabel htmlFor="venue-courts">Courts</FieldLabel>
-          <Input id="venue-courts" type="number" inputMode="numeric" value={courts} onChange={setCourts} />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-2">
-          <FieldLabel htmlFor="venue-lat" optional>
-            Latitude
-          </FieldLabel>
-          <Input id="venue-lat" type="number" inputMode="decimal" value={lat} onChange={setLat} placeholder="12.9352" />
-        </div>
-        <div className="flex flex-col gap-2">
-          <FieldLabel htmlFor="venue-lng" optional>
-            Longitude
-          </FieldLabel>
-          <Input id="venue-lng" type="number" inputMode="decimal" value={lng} onChange={setLng} placeholder="77.6245" />
-        </div>
-      </div>
-      <p className="text-xs text-muted">
-        Location lets players find the venue by distance and shows it on a map. In Google Maps, long-press the
-        venue and copy the numbers that appear.
-      </p>
-      {validPoint(lat, lng) && (
-        <MapPreview lat={decimal(lat)!} lng={decimal(lng)!} title="Map preview of the new venue" />
-      )}
-      <ErrorNote message={error} />
-      <Button type="submit" variant="accent" size="lg" fullWidth loading={busy}>
-        Create venue
-      </Button>
-    </form>
-  );
-}
-
 function Venues() {
   const [venues, setVenues] = useState<AdminVenue[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -189,6 +89,11 @@ function Venues() {
 
   return (
     <div className="flex flex-col gap-4">
+      {venues.length === 0 && (
+        <p className="rounded-[22px] border border-line bg-surface p-5 text-sm text-muted">
+          No venues yet. Create one to start adding events.
+        </p>
+      )}
       <ul className="flex flex-col gap-3">
         {venues.map((v) => (
           <VenueCard
@@ -198,7 +103,15 @@ function Venues() {
           />
         ))}
       </ul>
-      <NewVenueForm onCreated={(v) => setVenues([...venues, v])} />
+      <StickyFooter>
+        <Link
+          href="/admin/venues/new"
+          className="flex min-h-14 items-center justify-center gap-2 rounded-2xl bg-lime text-base font-semibold text-ink"
+        >
+          <PlusIcon className="size-5" />
+          Create venue
+        </Link>
+      </StickyFooter>
     </div>
   );
 }

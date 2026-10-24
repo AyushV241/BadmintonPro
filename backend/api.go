@@ -29,8 +29,11 @@ type API struct {
 	// routes are registered and answer 503 (free events still confirm).
 	payments        PaymentStore
 	paymentProvider payments.Provider
-	searchLimit     *limiter
-	providers       *oauth.Registry
+	// challenges is nil without a database too; challenges and player
+	// suggestions are then not registered.
+	challenges  ChallengeStore
+	searchLimit *limiter
+	providers   *oauth.Registry
 	// phone is nil when phone login is disabled.
 	phone *PhoneLogin
 	// cookieSecure marks cookies Secure. It must be true anywhere served over
@@ -76,6 +79,15 @@ func (a *API) WithMatches(matches MatchStore) *API {
 func (a *API) WithPayments(store PaymentStore, provider payments.Provider) *API {
 	a.payments = store
 	a.paymentProvider = provider
+	return a
+}
+
+// WithChallenges enables challenges, their expiry, and the recent and
+// nearby player lists. They need WithEvents, WithEntries and WithPayments
+// too: the locked entries are paid for like any other, and refunded through
+// the payment provider.
+func (a *API) WithChallenges(challenges ChallengeStore) *API {
+	a.challenges = challenges
 	return a
 }
 
@@ -136,6 +148,18 @@ func (a *API) Routes() http.Handler {
 	}
 	if a.matches != nil {
 		mux.HandleFunc("GET /api/me/matches", a.handleListMyMatches)
+		mux.HandleFunc("GET /api/me/stats", a.handleMyStats)
+	}
+	// Signed in. Each action is a POST on the challenge.
+	if a.events != nil && a.entries != nil && a.payments != nil && a.challenges != nil {
+		mux.HandleFunc("POST /api/challenges", a.handleCreateChallenge)
+		mux.HandleFunc("GET /api/challenges/{id}", a.handleGetChallenge)
+		mux.HandleFunc("POST /api/challenges/{id}/accept", a.handleAcceptChallenge)
+		mux.HandleFunc("POST /api/challenges/{id}/decline", a.handleDeclineChallenge)
+		mux.HandleFunc("POST /api/challenges/{id}/withdraw", a.handleWithdrawChallenge)
+		mux.HandleFunc("GET /api/me/challenges", a.handleListMyChallenges)
+		mux.HandleFunc("GET /api/me/recent-players", a.handleRecentPlayers)
+		mux.HandleFunc("GET /api/players/nearby", a.handleNearbyPlayers)
 	}
 	if a.users != nil {
 		mux.HandleFunc("GET /api/users/search", a.handleSearchUsers)

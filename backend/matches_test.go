@@ -576,3 +576,52 @@ func TestSeedDemoPoolAndPublishedSchedule(t *testing.T) {
 		t.Errorf("%d demo entries were reset to confirmed", n)
 	}
 }
+
+func TestMyStats(t *testing.T) {
+	store, srv := entriesTestServer(t)
+	ctx := context.Background()
+	insertEvent(t, store, "evt_t_stats", testEvent{})
+	addCourts(t, store, "evt_t_stats", 1)
+	asha, ashaUser := player(t, store, srv, 1, "asha")
+	_, raviUser := player(t, store, srv, 2, "ravi")
+	setRating(t, store, ashaUser.ID, FormatSingles, 1486)
+
+	var empty PlayerStats
+	if code := asha.do("GET", "/api/me/stats", nil, &empty); code != http.StatusOK {
+		t.Fatalf("stats: %d", code)
+	}
+	if empty.Ratings[FormatSingles] != 1486 || empty.Ratings[FormatDoubles] != startingRating ||
+		empty.Ratings[FormatMixed] != startingRating || empty.Played != 0 || empty.Won != 0 {
+		t.Errorf("before any match = %+v", empty)
+	}
+
+	// Asha wins one, loses one; a walkover and a scheduled match don't count.
+	base := time.Now().Add(24 * time.Hour)
+	for i, m := range []struct{ status, winner string }{{"completed", "A"}, {"completed", "B"}, {"walkover", "A"}, {"scheduled", ""}} {
+		id := fmt.Sprintf("mat_t_stats_%d", i)
+		var winner any
+		if m.winner != "" {
+			winner = m.winner
+		}
+		start := base.Add(time.Duration(i) * time.Hour)
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO matches (id, event_id, format, court_id, starts_at, ends_at, status, winner_side)
+			VALUES ($1, 'evt_t_stats', 'singles', 'crt_t_entries_1', $2, $3, $4, $5)`,
+			id, start, start.Add(30*time.Minute), m.status, winner); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `INSERT INTO match_sides (match_id, side, user_id) VALUES ($1, 'A', $2), ($1, 'B', $3)`,
+			id, ashaUser.ID, raviUser.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stats PlayerStats
+	asha.do("GET", "/api/me/stats", nil, &stats)
+	if stats.Played != 2 || stats.Won != 1 {
+		t.Errorf("stats = %+v, want 2 played, 1 won", stats)
+	}
+	anon := adminClient{t: t, srv: srv}
+	if code := anon.do("GET", "/api/me/stats", nil, nil); code != http.StatusUnauthorized {
+		t.Errorf("without a session: %d", code)
+	}
+}

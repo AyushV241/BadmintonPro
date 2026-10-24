@@ -250,6 +250,8 @@ export type Entry = {
   /** While pending payment: when the held spot is released. */
   holdExpiresAt: string | null;
   holdExpired: boolean;
+  /** Set on a locked entry: the challenge it pays for. */
+  challengeId: string | null;
   createdAt: string;
   event: Pick<
     BadmintonEvent,
@@ -309,6 +311,8 @@ export type MyMatch = {
   sides: MatchSide[];
   mySide: "A" | "B";
   winnerSide: "A" | "B" | null;
+  /** Set when a challenge fixed this match. */
+  challengeId: string | null;
 };
 
 /** The signed-in player's matches, soonest first. */
@@ -549,4 +553,87 @@ export async function verifyPayment(result: CheckoutResult): Promise<Entry> {
     body: JSON.stringify(result),
   });
   return entry;
+}
+
+// --- Challenges -------------------------------------------------------------
+// One player challenges another to a singles match inside an event. Within
+// 4 hours of sending, the opponent accepts and both pay; only then is the
+// match fixed (design doc, section 12).
+
+/** A player as challenges show them, with their singles rating. */
+export type Player = PublicUser & { rating: number };
+
+export type ChallengeStatus = "pending" | "accepted" | "scheduled" | "declined" | "withdrawn" | "expired" | "failed";
+
+export type Challenge = {
+  id: string;
+  status: ChallengeStatus;
+  role: "challenger" | "opponent";
+  format: "singles";
+  event: Pick<
+    BadmintonEvent,
+    "id" | "title" | "startsAt" | "endsAt" | "registrationClosesAt" | "feePaise" | "currency" | "venue"
+  >;
+  challenger: Player;
+  opponent: Player;
+  preferredStart: string;
+  /** Accept and both pay before this, or the challenge expires. */
+  expiresAt: string;
+  createdAt: string;
+  respondedAt: string | null;
+  /** The caller's locked entry, once the challenge is accepted. */
+  myEntry: { id: string; status: EntryStatus; holdExpiresAt: string | null } | null;
+  theirEntryPaid: boolean;
+  match: { id: string; court: Court; startsAt: string; endsAt: string; judge: Judge | null } | null;
+};
+
+export async function sendChallenge(eventId: string, opponentUsername: string, preferredStart: string): Promise<Challenge> {
+  const { challenge } = await request<{ challenge: Challenge }>("/api/challenges", {
+    method: "POST",
+    body: JSON.stringify({ eventId, opponentUsername, preferredStart }),
+  });
+  return challenge;
+}
+
+export async function getChallenge(id: string): Promise<Challenge> {
+  const { challenge } = await request<{ challenge: Challenge }>(`/api/challenges/${encodeURIComponent(id)}`);
+  return challenge;
+}
+
+/** Sent and received: open ones first, then the rest, newest first. */
+export async function myChallenges(): Promise<Challenge[]> {
+  const { challenges } = await request<{ challenges: Challenge[] }>("/api/me/challenges");
+  return challenges;
+}
+
+async function challengeAction(id: string, action: "accept" | "decline" | "withdraw"): Promise<Challenge> {
+  const { challenge } = await request<{ challenge: Challenge }>(
+    `/api/challenges/${encodeURIComponent(id)}/${action}`,
+    { method: "POST" },
+  );
+  return challenge;
+}
+
+export const acceptChallenge = (id: string) => challengeAction(id, "accept");
+export const declineChallenge = (id: string) => challengeAction(id, "decline");
+export const withdrawChallenge = (id: string) => challengeAction(id, "withdraw");
+
+/** People the caller has played or challenged, most recent first. */
+export async function recentPlayers(): Promise<Player[]> {
+  const { players } = await request<{ players: Player[] }>("/api/me/recent-players");
+  return players;
+}
+
+/** Players active at venues near a point, closest rating first. */
+export async function nearbyPlayers(lat: number, lng: number, radiusKm = 10): Promise<Player[]> {
+  const params = new URLSearchParams({ lat: String(lat), lng: String(lng), radiusKm: String(radiusKm) });
+  const { players } = await request<{ players: Player[] }>(`/api/players/nearby?${params}`);
+  return players;
+}
+
+/** The signed-in player's ratings (1200 until they've played) and finished matches. */
+export type PlayerStats = { ratings: Record<EventFormat, number>; played: number; won: number };
+
+export function myStats(): Promise<PlayerStats> {
+  return request<PlayerStats>("/api/me/stats");
 }

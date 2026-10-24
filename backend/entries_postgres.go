@@ -13,7 +13,7 @@ import (
 // entryColumns is an entries row (en) with its partner (p, left-joined), its
 // event (e) and the event's venue (v), as entryFrom joins them. scanEntry
 // reads them in this order.
-const entryColumns = `en.id, en.kind, en.formats, en.source, en.status, en.hold_expires_at,
+const entryColumns = `en.id, en.kind, en.challenge_id, en.formats, en.source, en.status, en.hold_expires_at,
 	(en.status = 'pending_payment' AND en.hold_expires_at <= now()), en.created_at,
 	p.id, COALESCE(p.username, ''), COALESCE(p.name, ''),
 	e.id, e.title, e.status, e.starts_at, e.ends_at, e.registration_closes_at, e.fee_paise, e.currency,
@@ -32,7 +32,7 @@ func scanEntry(row pgx.Row) (Entry, error) {
 	var partnerID *string
 	var partner PublicUser
 	ev := &en.Event
-	err := row.Scan(&en.ID, &en.Kind, &en.Formats, &en.Source, &en.Status, &en.HoldExpiresAt,
+	err := row.Scan(&en.ID, &en.Kind, &en.ChallengeID, &en.Formats, &en.Source, &en.Status, &en.HoldExpiresAt,
 		&en.HoldExpired, &en.CreatedAt,
 		&partnerID, &partner.Username, &partner.Name,
 		&ev.ID, &ev.Title, &ev.Status, &ev.StartsAt, &ev.EndsAt, &ev.RegistrationClosesAt, &ev.FeePaise, &ev.Currency,
@@ -218,14 +218,19 @@ func (s *PostgresStore) CancelEntry(ctx context.Context, userID, entryID string)
 		// Locks the entry so a payment confirming it (ConfirmPayment) can't
 		// land between the check and the update; a payment that lands after
 		// it is refunded.
-		var status string
-		err := tx.QueryRow(ctx, `SELECT status FROM entries WHERE id = $1 AND user_id = $2 FOR UPDATE`,
-			entryID, userID).Scan(&status)
+		var status, kind string
+		err := tx.QueryRow(ctx, `SELECT status, kind FROM entries WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+			entryID, userID).Scan(&status, &kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchEntry
 		}
 		if err != nil {
 			return fmt.Errorf("lock entry: %w", err)
+		}
+		// A challenge's entries come and go with the challenge: withdrawing
+		// or declining it releases both.
+		if kind == EntryLocked {
+			return ErrEntryInChallenge
 		}
 		// Only unpaid entries for now: cancelling a paid one means a refund,
 		// which waits for payments and the refund policy (open question 2).
