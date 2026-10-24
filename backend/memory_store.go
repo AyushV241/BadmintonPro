@@ -17,6 +17,7 @@ type identityKey struct {
 type memorySession struct {
 	userID    string
 	expiresAt time.Time
+	mode      string
 }
 
 // MemoryStore keeps everything in process. It backs the test suite; data is
@@ -102,7 +103,7 @@ func (s *MemoryStore) CreateSession(_ context.Context, userID string) (string, e
 		return "", err
 	}
 	s.mu.Lock()
-	s.sessions[token] = memorySession{userID: userID, expiresAt: time.Now().Add(sessionTTL)}
+	s.sessions[token] = memorySession{userID: userID, expiresAt: time.Now().Add(sessionTTL), mode: SessionPlayer}
 	s.mu.Unlock()
 	return token, nil
 }
@@ -130,5 +131,27 @@ func (s *MemoryStore) Revoke(_ context.Context, token string) error {
 	s.mu.Lock()
 	delete(s.sessions, token)
 	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemoryStore) SessionMode(_ context.Context, token string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[token]
+	if !ok || time.Now().After(sess.expiresAt) {
+		return "", ErrInvalidToken
+	}
+	return sess.mode, nil
+}
+
+func (s *MemoryStore) SetSessionMode(_ context.Context, token, mode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[token]
+	if !ok || time.Now().After(sess.expiresAt) {
+		return ErrInvalidToken
+	}
+	sess.mode = mode
+	s.sessions[token] = sess
 	return nil
 }

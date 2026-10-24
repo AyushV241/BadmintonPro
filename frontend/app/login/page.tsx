@@ -13,6 +13,7 @@ import {
   loginOptions,
   providerLoginUrl,
   startPhoneLogin,
+  verifyJudgeLogin,
   verifyPhoneLogin,
   type LoginOptions,
 } from "@/lib/api";
@@ -56,6 +57,12 @@ const sheetCopy: Record<Sheet, { title: string; subtitle?: string }> = {
   code: { title: "Enter the code" },
 };
 
+// "Log in as judge" is phone only, for numbers an admin has registered.
+const judgeSheetCopy: Record<Sheet, { title: string; subtitle?: string }> = {
+  ...sheetCopy,
+  phone: { title: "Log in as judge", subtitle: "Use the number your event admin registered." },
+};
+
 function OrDivider() {
   return (
     <div className="flex items-center gap-3 text-[11px] font-semibold tracking-[0.14em] text-muted">
@@ -73,6 +80,8 @@ export default function LoginPage() {
   const [options, setOptions] = useState<LoginOptions | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<Sheet>("options");
+  // True after "Log in as judge": the phone steps sign in to the judge view.
+  const [asJudge, setAsJudge] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -93,7 +102,12 @@ export default function LoginPage() {
   const phoneEnabled = options?.phone ?? false;
   const nothingEnabled = options !== null && !phoneEnabled && providers.length === 0;
   const loading = options === null && !loadError;
-  const copy = sheetCopy[sheet];
+  const copy = (asJudge ? judgeSheetCopy : sheetCopy)[sheet];
+
+  function backToOptions() {
+    setAsJudge(false);
+    setSheet("options");
+  }
 
   return (
     <main className="flex min-h-dvh justify-center bg-ink">
@@ -189,6 +203,20 @@ export default function LoginPage() {
                   backend.
                 </p>
               )}
+
+              {/* Kept quiet on purpose: few people judge. */}
+              {phoneEnabled && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAsJudge(true);
+                    setSheet("phone");
+                  }}
+                  className="mx-auto mt-1 text-xs text-muted underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Judging an event? Log in as judge
+                </button>
+              )}
             </div>
           )}
 
@@ -196,11 +224,17 @@ export default function LoginPage() {
             <div className="flex flex-col gap-2">
               {sheet === "phone" && <FieldLabel htmlFor="login-phone">Phone number</FieldLabel>}
               <PhoneCodeForm
+                // Remount when switching flows so a typed number or code
+                // doesn't carry over.
+                key={asJudge ? "judge" : "player"}
                 start={startPhoneLogin}
-                verify={verifyPhoneLogin}
-                // A first sign-in goes to the profile step.
+                verify={asJudge ? verifyJudgeLogin : verifyPhoneLogin}
+                // A judge goes to the judge home; a first player sign-in goes
+                // to the profile step.
                 onVerified={(user) =>
-                  router.push(user.profileComplete ? "/dashboard" : "/setup-profile")
+                  router.push(
+                    asJudge ? "/judge" : user.profileComplete ? "/dashboard" : "/setup-profile",
+                  )
                 }
                 onStepChange={setSheet}
                 label=""
@@ -213,13 +247,8 @@ export default function LoginPage() {
                 sendIcon={<ArrowRightIcon />}
                 verifyLabel="Verify & continue"
               />
-              {sheet === "phone" && providers.length > 0 && (
-                <Button
-                  variant="ghost"
-                  fullWidth
-                  className="text-muted"
-                  onClick={() => setSheet("options")}
-                >
+              {sheet === "phone" && (asJudge || providers.length > 0) && (
+                <Button variant="ghost" fullWidth className="text-muted" onClick={backToOptions}>
                   Back to all options
                 </Button>
               )}

@@ -5,14 +5,14 @@ import { useParams } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { AdminShell, ErrorNote, StatusChip } from "@/components/admin/AdminShell";
 import { EventForm } from "@/components/admin/EventForm";
-import { FieldLabel } from "@/components/form/FieldLabel";
 import { ArrowRightIcon, XIcon } from "@/components/icons";
-import { Button, Input } from "@/components/ui";
+import { Button, SingleSelect } from "@/components/ui";
 import {
   ApiError,
   adminAddJudge,
   adminCancelEvent,
   adminGetEvent,
+  adminListJudges,
   adminListVenues,
   adminPublishEvent,
   adminRemoveJudge,
@@ -21,6 +21,7 @@ import {
   type AdminVenue,
   type BadmintonEvent,
   type EventDraft,
+  type RegisteredJudge,
 } from "@/lib/api";
 import { formatWhen, rupees, venueDate, venueTime } from "@/lib/eventTime";
 
@@ -75,21 +76,33 @@ function Summary({ e }: { e: BadmintonEvent }) {
 }
 
 function Judges({ data, onChange }: { data: AdminEvent; onChange: (d: AdminEvent) => void }) {
-  const [username, setUsername] = useState("");
+  // Only registered judges can be added: they're the ones who can log in as
+  // judge. They're registered on the Judges page.
+  const [registered, setRegistered] = useState<RegisteredJudge[] | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const eventId = data.event.id;
 
+  useEffect(() => {
+    adminListJudges()
+      .then(setRegistered)
+      .catch((err) => setError(message(err)));
+  }, []);
+
+  const available = (registered ?? []).filter((r) => !data.judges.some((j) => j.userId === r.userId));
+
   async function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!picked) return;
     setError(null);
     setBusy(true);
     try {
-      const judge = await adminAddJudge(eventId, username);
+      const judge = await adminAddJudge(eventId, picked);
       if (!data.judges.some((j) => j.userId === judge.userId)) {
         onChange({ ...data, judges: [...data.judges, judge] });
       }
-      setUsername("");
+      setPicked(null);
     } catch (err) {
       setError(message(err));
     } finally {
@@ -119,7 +132,7 @@ function Judges({ data, onChange }: { data: AdminEvent; onChange: (d: AdminEvent
           <li key={j.userId} className="flex items-center justify-between gap-3 rounded-2xl bg-background px-3 py-2">
             <span className="flex flex-col">
               <span className="text-sm font-semibold">{j.name}</span>
-              <span className="text-xs text-muted">@{j.username}</span>
+              {j.username && <span className="text-xs text-muted">@{j.username}</span>}
             </span>
             <button
               type="button"
@@ -132,22 +145,35 @@ function Judges({ data, onChange }: { data: AdminEvent; onChange: (d: AdminEvent
           </li>
         ))}
       </ul>
-      <form onSubmit={add} className="flex flex-col gap-2">
-        <FieldLabel htmlFor="judge-username">Add by username</FieldLabel>
-        <div className="flex gap-2">
-          <Input
-            id="judge-username"
-            value={username}
-            onChange={setUsername}
-            placeholder="priya"
-            startAdornment="@"
-            autoComplete="off"
-          />
-          <Button type="submit" variant="secondary" loading={busy} disabled={!username.trim()}>
-            Add
-          </Button>
-        </div>
-      </form>
+      {registered?.length === 0 ? (
+        <p className="text-sm text-muted">
+          No judges registered yet.{" "}
+          <Link href="/admin/judges" className="font-semibold text-foreground underline underline-offset-2">
+            Add judges
+          </Link>{" "}
+          by phone number first.
+        </p>
+      ) : (
+        <form onSubmit={add} className="flex flex-col gap-2">
+          <div className="flex items-end gap-2">
+            <SingleSelect
+              label="Add a judge"
+              value={picked}
+              onChange={setPicked}
+              placeholder={available.length ? "Choose a registered judge" : "Every registered judge is added"}
+              options={available.map((r) => ({ value: r.userId, label: r.name }))}
+              disabled={available.length === 0}
+              fullWidth
+            />
+            <Button type="submit" variant="secondary" loading={busy} disabled={!picked}>
+              Add
+            </Button>
+          </div>
+          <Link href="/admin/judges" className="self-start text-xs text-muted underline underline-offset-2">
+            Manage judges
+          </Link>
+        </form>
+      )}
       <ErrorNote message={error} />
     </section>
   );

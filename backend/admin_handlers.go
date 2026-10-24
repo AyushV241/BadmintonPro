@@ -52,6 +52,12 @@ func (a *API) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/events/{id}/judges", a.adminRoute(a.handleAdminAddJudge))
 	mux.HandleFunc("DELETE /api/admin/events/{id}/judges/{userId}", a.adminRoute(a.handleAdminRemoveJudge))
 
+	if a.judges != nil {
+		mux.HandleFunc("GET /api/admin/judges", a.adminRoute(a.handleAdminListJudges))
+		mux.HandleFunc("POST /api/admin/judges", a.adminRoute(a.handleAdminRegisterJudge))
+		mux.HandleFunc("DELETE /api/admin/judges/{userId}", a.adminRoute(a.handleAdminDeleteJudge))
+	}
+
 	if a.matches != nil {
 		mux.HandleFunc("GET /api/admin/events/{id}/entries", a.adminRoute(a.handleAdminListEventEntries))
 		mux.HandleFunc("GET /api/admin/events/{id}/schedule", a.adminRoute(a.handleAdminGetSchedule))
@@ -97,6 +103,8 @@ func writeAdminError(w http.ResponseWriter, err error, action string) {
 		writeError(w, http.StatusNotFound, "venue not found")
 	case errors.Is(err, ErrNoSuchUser):
 		writeError(w, http.StatusNotFound, "no user with that username")
+	case errors.Is(err, ErrNotAJudge):
+		writeError(w, http.StatusBadRequest, "that person isn't a registered judge. Add them under Judges first")
 	case errors.Is(err, ErrCourtLabelTaken):
 		writeError(w, http.StatusConflict, "this venue already has a court with that name")
 	case errors.Is(err, ErrEventNotEditable):
@@ -286,17 +294,18 @@ func (a *API) changeStatus(w http.ResponseWriter, r *http.Request, id string, fr
 
 func (a *API) handleAdminAddJudge(w http.ResponseWriter, r *http.Request, _ User) {
 	var req struct {
-		Username string `json:"username"`
+		// UserID is a registered judge's, from GET /api/admin/judges.
+		UserID string `json:"userId"`
 	}
 	if !decodeJSONBody(w, r, &req, adminBodyLimit) {
 		return
 	}
-	username := strings.TrimPrefix(strings.TrimSpace(req.Username), "@")
-	if username == "" {
-		writeError(w, http.StatusBadRequest, "username is required")
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "userId is required")
 		return
 	}
-	judge, err := a.admin.AddEventJudge(r.Context(), r.PathValue("id"), username)
+	judge, err := a.admin.AddEventJudge(r.Context(), r.PathValue("id"), userID)
 	if err != nil {
 		writeAdminError(w, err, "add the judge")
 		return

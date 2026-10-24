@@ -71,9 +71,18 @@ type Store interface {
 	// does not make the number a way to sign in.
 	SetVerifiedPhone(ctx context.Context, userID, phone string) (User, error)
 
+	// CreateSession starts a session in SessionPlayer mode.
 	CreateSession(ctx context.Context, userID string) (string, error)
 	UserForToken(ctx context.Context, token string) (User, error)
 	Revoke(ctx context.Context, token string) error
+
+	// SessionMode returns a live session's mode, SessionPlayer or
+	// SessionJudge, or ErrInvalidToken. The mode only picks which home page
+	// the app shows; judge endpoints check the judges table themselves.
+	SessionMode(ctx context.Context, token string) (string, error)
+	// SetSessionMode switches a live session's mode. It returns
+	// ErrInvalidToken for an unknown or expired session.
+	SetSessionMode(ctx context.Context, token, mode string) error
 }
 
 func normaliseEmail(email string) string {

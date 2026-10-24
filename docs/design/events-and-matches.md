@@ -517,6 +517,49 @@ change_A   = round(K × (result_A - expected_A))
 - Consider an audit row per admin action. Events already record
   `created_by`.
 
+### Judge accounts (Decided, built: migration `000011`)
+
+A judge is an **ordinary phone account plus a row in `judges`**, not a
+separate kind of user. That's what lets a judge also play.
+
+- **Registering:** in admin mode, Judges → name and phone number
+  (`POST /api/admin/judges`). The number is normalised to E.164 and finds
+  its phone account the same way a phone sign-in does. A number that has
+  never signed in gets an account then, named after the judge. An existing
+  account keeps the name its owner chose; the admin's name is kept on the
+  `judges` row. The role is held by the **account** (`user_id`), not the
+  number.
+- **Signing in:** "Log in as judge" is a deliberately quiet link on the
+  sign-in page. It's phone only. It sends the same code as a normal sign-in
+  and verifies with `"as": "judge"`. The judge list is checked **after** the
+  code: a number nobody registered gets a 403, no session, and **no account
+  is created**. Because the check needs a valid code, only the number's
+  owner learns whether it's registered.
+- **Sessions have a mode,** `player` or `judge` (`sessions.mode`). It only
+  picks the home page (`/judge` or `/dashboard`) and never grants anything:
+  every judge endpoint checks `judges` on each request. A judge can switch
+  views without signing in again (`POST /api/me/mode`); switching to judge
+  view needs a registered judge.
+- **Playing too:** signing in normally with the same number reaches the
+  same account in player mode. Judges are never assigned a match they play
+  in (section 6).
+- **Event judges come from the registry.** An event's judge list
+  (`event_judges`) only accepts registered judges, picked by name. A person
+  who isn't registered couldn't reach the judge home page to score.
+- **Removing a judge** deletes the `judges` row and takes them off the
+  judge list of every event that hasn't ended. Matches already scheduled
+  keep their judge (rule 7: they're never moved), so the admin should
+  reassign those by hand. Their account and player data are untouched, and
+  any judge-mode session falls back to player mode.
+- **The judge home page** (`GET /api/judge/home`) lists the events they're
+  listed for that haven't ended, and the matches assigned to them that
+  aren't cancelled, including today's finished ones. Scoring from it comes
+  with live scoring (build step 8).
+
+Accounts are per sign-in method, so a judge's Google account isn't a judge.
+As with admins, a recycled or SIM-swapped number hands the judge role to
+whoever holds the number next; remove judges who change numbers.
+
 **Court bookings are entered by hand** (Decided). Venues have no booking
 API, so the admin books courts with the venue directly and enters the
 event with the courts it uses. The app can't see bookings made elsewhere.
@@ -530,7 +573,7 @@ event is saved and when it's published, inside the transaction.
 - Create and edit venues and courts.
 - Create, publish and cancel events: courts, time window, slot lengths,
   formats, capacity, `max_matches` and fee.
-- Assign judges to an event.
+- Register judges by phone number, and assign them to events.
 - Preview, run and publish the schedule.
 - Later: move or delete scheduled slots, telling the players affected.
 - Run the walk-in desk.
@@ -560,7 +603,8 @@ and one open (`created`) order per entry. `000010` adds `challenges`
 `expires_at` is the one deadline) and `entries.challenge_id`, with a check
 that locked entries have one and open entries don't. A partial unique index
 on (event, the pair in either order) allows one open (`pending` or
-`accepted`) challenge per pair per event. The rest is proposed.
+`accepted`) challenge per pair per event. `000011` adds `judges` and
+`sessions.mode` (section 10, "Judge accounts"). The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -568,7 +612,8 @@ on (event, the pair in either order) allows one open (`pending` or
 | `courts` | id, venue_id, label, active |
 | `events` | id, venue_id, title, starts_at, ends_at, status, fee_paise (per entry), currency, capacity (most entries), max_matches, formats (array), slot_minutes per format, registration_closes_at, rating_min/max (whole-number Elo) |
 | `event_courts` | event_id, court_id, venue_id (composite keys keep courts at the event's venue) |
-| `event_judges` | event_id, user_id, added_at (built, `000006`) |
+| `event_judges` | event_id, user_id, added_at (built, `000006`); only registered judges |
+| `judges` | user_id, name, phone, created_by, created_at (built, `000011`) |
 | `entries` | id, event_id, user_id, kind (`open` or `locked`), formats, partner_user_id (open doubles), challenge_id (locked), source (`online` or `walk_in`), status (`pending_payment`, `confirmed`, `standby`, `scheduled`, `cancelled`, `refunded`, `no_show`), hold_expires_at, match_id (once scheduled), created_at. **Not** unique on (event_id, user_id): a player can hold several entries |
 | `event_checkins` | event_id, user_id, checked_in_at. One check-in per player per event covers all their entries |
 | `payments` | id, entry_id, user_id, provider (`razorpay`, `fake`, `offline`), kind (`online` or `offline`), provider_order_id, provider_payment_id, amount_paise, currency, status (`created`, `paid`, `failed`, `refund_pending`, `refunded`), recorded_by (admin, for offline), refund_id, paid_at, refunded_at (built, `000009`). One paid payment per entry |

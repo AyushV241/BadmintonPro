@@ -191,6 +191,32 @@ func (s *PostgresStore) Revoke(ctx context.Context, token string) error {
 	return err
 }
 
+func (s *PostgresStore) SessionMode(ctx context.Context, token string) (string, error) {
+	var mode string
+	err := s.pool.QueryRow(ctx,
+		`SELECT mode FROM sessions WHERE token = $1 AND expires_at > now()`, token,
+	).Scan(&mode)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", ErrInvalidToken
+	case err != nil:
+		return "", fmt.Errorf("session mode: %w", err)
+	}
+	return mode, nil
+}
+
+func (s *PostgresStore) SetSessionMode(ctx context.Context, token, mode string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE sessions SET mode = $2 WHERE token = $1 AND expires_at > now()`, token, mode)
+	if err != nil {
+		return fmt.Errorf("set session mode: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidToken
+	}
+	return nil
+}
+
 // DeleteExpiredSessions clears out sessions past their expiry. Expired tokens
 // are already rejected on read; this just stops the table growing forever.
 func (s *PostgresStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {

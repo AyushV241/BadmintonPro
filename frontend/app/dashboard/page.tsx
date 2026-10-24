@@ -8,7 +8,7 @@ import { BottomNav } from "@/components/app/BottomNav";
 import { EventRow, NextEventCard, joinable, myStatusIn } from "@/components/events/EventBits";
 import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
 import { useAdminMode } from "@/lib/adminMode";
-import { me, myEntries, myMatches, nearbyPlayers, type Entry, type MyMatch, type Player, type User } from "@/lib/api";
+import { meSession, myEntries, myMatches, nearbyPlayers, type Entry, type MyMatch, type Player, type User } from "@/lib/api";
 import { currentPosition } from "@/lib/location";
 import { initials } from "@/lib/initials";
 import { STARTING_RATING } from "@/lib/rating";
@@ -155,18 +155,25 @@ function NearbyEvents() {
 export default function HomePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [isJudge, setIsJudge] = useState(false);
   const adminMode = useAdminMode();
 
   useEffect(() => {
     // The session cookie is httpOnly, so the only way to know whether we are
     // signed in is to ask the server.
-    me()
-      .then((u) => {
+    meSession()
+      .then(({ user: u, mode, isJudge }) => {
+        // A judge-mode session belongs on the judge home, profile or not.
+        if (mode === "judge") {
+          router.replace("/judge");
+          return;
+        }
         // The profile step comes first.
         if (!u.profileComplete) {
           router.replace("/setup-profile");
           return;
         }
+        setIsJudge(isJudge);
         setUser(u);
       })
       .catch(() => router.replace("/login"));
@@ -210,6 +217,21 @@ export default function HomePage() {
               <span className="flex flex-1 flex-col">
                 <span className="text-[15px] font-semibold tracking-[-0.01em]">Admin mode is on</span>
                 <span className="text-xs text-muted">Manage venues, events and judges</span>
+              </span>
+              <ArrowRightIcon className="size-5 text-muted" />
+            </Link>
+          )}
+          {isJudge && (
+            <Link
+              href="/judge"
+              className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-4"
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-background">
+                <ShieldIcon className="size-5" />
+              </span>
+              <span className="flex flex-1 flex-col">
+                <span className="text-[15px] font-semibold tracking-[-0.01em]">Judge view</span>
+                <span className="text-xs text-muted">The matches you&apos;re judging</span>
               </span>
               <ArrowRightIcon className="size-5 text-muted" />
             </Link>

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -354,17 +353,20 @@ func (s *PostgresStore) ListEventJudges(ctx context.Context, eventID string) ([]
 	return judges, nil
 }
 
-func (s *PostgresStore) AddEventJudge(ctx context.Context, eventID, username string) (Judge, error) {
+func (s *PostgresStore) AddEventJudge(ctx context.Context, eventID, userID string) (Judge, error) {
 	if _, err := statusOf(ctx, s.pool, eventID); err != nil {
 		return Judge{}, err
 	}
+	// Only registered judges: they're the ones who can sign in as a judge.
 	var j Judge
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, username FROM users WHERE lower(username) = $1`,
-		strings.ToLower(strings.TrimSpace(username)),
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id, u.name, COALESCE(u.username, '')
+		FROM judges jr
+		JOIN users u ON u.id = jr.user_id
+		WHERE jr.user_id = $1`, userID,
 	).Scan(&j.UserID, &j.Name, &j.Username)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Judge{}, ErrNoSuchUser
+		return Judge{}, ErrNotAJudge
 	}
 	if err != nil {
 		return Judge{}, fmt.Errorf("find judge: %w", err)

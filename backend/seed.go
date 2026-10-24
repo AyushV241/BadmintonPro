@@ -95,6 +95,13 @@ var demoJudges = []demoPlayer{
 	{id: "usr_demo_lata", username: "demo_lata", name: "Lata Krishnan"},
 }
 
+// demoJudgePhones are the numbers the demo judges are registered with, so
+// "Log in as judge" works on them (OTP_PROVIDER=console prints the code).
+var demoJudgePhones = map[string]string{
+	"usr_demo_sameer": "+919999900001",
+	"usr_demo_lata":   "+919999900002",
+}
+
 // demoEntry is a confirmed open entry in demoEntryEvent. They join in this
 // order, a minute apart.
 type demoEntry struct {
@@ -200,6 +207,25 @@ func seedDemo(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 				p.id, p.name, p.username,
 			); err != nil {
 				return fmt.Errorf("user %s: %w", p.id, err)
+			}
+		}
+		// The demo judges are phone accounts registered as judges.
+		for _, j := range demoJudges {
+			phone := demoJudgePhones[j.id]
+			for _, q := range []struct {
+				sql  string
+				args []any
+			}{
+				{`UPDATE users SET phone = $2, phone_verified = true, sign_in_method = 'phone' WHERE id = $1`,
+					[]any{j.id, phone}},
+				{`INSERT INTO user_identities (provider, subject, user_id) VALUES ('phone', $2, $1) ON CONFLICT DO NOTHING`,
+					[]any{j.id, phone}},
+				{`INSERT INTO judges (user_id, name, phone) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+					[]any{j.id, j.name, phone}},
+			} {
+				if _, err := tx.Exec(ctx, q.sql, q.args...); err != nil {
+					return fmt.Errorf("judge %s: %w", j.id, err)
+				}
 			}
 		}
 		for _, p := range demoPlayers {

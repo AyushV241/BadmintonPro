@@ -321,6 +321,75 @@ export async function myMatches(): Promise<MyMatch[]> {
   return matches;
 }
 
+// --- Judges -----------------------------------------------------------------
+// A judge is an ordinary phone account an admin has registered. "Log in as
+// judge" lands on /judge; signing in normally lands on the player home, and
+// a judge can switch between the two. The server checks the judge list on
+// every judge request; the mode only picks the home page.
+
+export type SessionMode = "player" | "judge";
+
+/** GET /api/me: the account, and what its session is for. */
+export type MeSession = { user: User; mode: SessionMode; isJudge: boolean };
+
+export function meSession(): Promise<MeSession> {
+  return request<MeSession>("/api/me");
+}
+
+/**
+ * "Log in as judge": like verifyPhoneLogin, but only a number an admin has
+ * registered gets in (403 otherwise), and the session starts in judge mode.
+ */
+export async function verifyJudgeLogin(phone: string, code: string): Promise<User> {
+  const { user } = await request<MeSession>("/api/auth/phone/verify", {
+    method: "POST",
+    body: JSON.stringify({ phone, code, as: "judge" }),
+  });
+  return user;
+}
+
+/** Switches the home page. "judge" needs a registered judge (403 otherwise). */
+export function setSessionMode(mode: SessionMode): Promise<MeSession> {
+  return request<MeSession>("/api/me/mode", { method: "POST", body: JSON.stringify({ mode }) });
+}
+
+/** One entry in the admin's judge list. */
+export type RegisteredJudge = {
+  userId: string;
+  /** As the admin entered them; phone in E.164. */
+  name: string;
+  phone: string;
+  /** Empty until they set up a player profile. */
+  username: string;
+  createdAt: string;
+};
+
+/** An event whose judge list includes the signed-in judge. */
+export type JudgeEvent = {
+  id: string;
+  title: string;
+  status: EventStatus;
+  startsAt: string;
+  endsAt: string;
+  venue: Venue;
+};
+
+/** A match the judge scores: a player match with no side of their own. */
+export type JudgeMatch = Omit<MyMatch, "mySide">;
+
+export type JudgeHome = {
+  judge: RegisteredJudge;
+  /** Not yet ended or cancelled, soonest first. */
+  events: JudgeEvent[];
+  /** Assigned to the judge, soonest first, including today's finished ones. */
+  matches: JudgeMatch[];
+};
+
+/** 403 unless the signed-in account is a registered judge. */
+export function judgeHome(): Promise<JudgeHome> {
+  return request<JudgeHome>("/api/judge/home");
+}
+
 // --- Admin mode -------------------------------------------------------------
 // Every /api/admin call needs a session. Admin mode is open to every
 // signed-in user for now; later only people with the role.
@@ -417,11 +486,11 @@ export function adminCancelEvent(id: string): Promise<AdminEvent> {
   return request<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 
-/** 404 if no user has that username. */
-export async function adminAddJudge(eventId: string, username: string): Promise<Judge> {
+/** Adds a registered judge (from adminListJudges); 400 for anyone else. */
+export async function adminAddJudge(eventId: string, userId: string): Promise<Judge> {
   const res = await request<{ judge: Judge }>(
     `/api/admin/events/${encodeURIComponent(eventId)}/judges`,
-    { method: "POST", body: JSON.stringify({ username }) },
+    { method: "POST", body: JSON.stringify({ userId }) },
   );
   return res.judge;
 }
@@ -431,6 +500,33 @@ export function adminRemoveJudge(eventId: string, userId: string): Promise<void>
     `/api/admin/events/${encodeURIComponent(eventId)}/judges/${encodeURIComponent(userId)}`,
     { method: "DELETE" },
   );
+}
+
+/** Everyone who can "Log in as judge", by name. */
+export async function adminListJudges(): Promise<RegisteredJudge[]> {
+  const { judges } = await request<{ judges: RegisteredJudge[] }>("/api/admin/judges");
+  return judges;
+}
+
+/**
+ * Registers a judge by name and phone. A number that has never signed in
+ * gets an account; one that has keeps it, so the person can also play.
+ * 409 if the number is already a judge.
+ */
+export async function adminRegisterJudge(name: string, phone: string): Promise<RegisteredJudge> {
+  const { judge } = await request<{ judge: RegisteredJudge }>("/api/admin/judges", {
+    method: "POST",
+    body: JSON.stringify({ name, phone }),
+  });
+  return judge;
+}
+
+/**
+ * Removes a judge. They come off every event still to come; matches
+ * already scheduled keep them. Their account is untouched.
+ */
+export function adminDeleteJudge(userId: string): Promise<void> {
+  return request<void>(`/api/admin/judges/${encodeURIComponent(userId)}`, { method: "DELETE" });
 }
 
 // Schedule: the matcher's proposal for an event, then the published matches.

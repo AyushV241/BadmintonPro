@@ -31,7 +31,10 @@ type API struct {
 	paymentProvider payments.Provider
 	// challenges is nil without a database too; challenges and player
 	// suggestions are then not registered.
-	challenges  ChallengeStore
+	challenges ChallengeStore
+	// judges is nil without a database too; judge sign-in, the judge home
+	// page and the admin's judge list are then not registered.
+	judges      JudgeStore
 	searchLimit *limiter
 	providers   *oauth.Registry
 	// phone is nil when phone login is disabled.
@@ -88,6 +91,13 @@ func (a *API) WithPayments(store PaymentStore, provider payments.Provider) *API 
 // the payment provider.
 func (a *API) WithChallenges(challenges ChallengeStore) *API {
 	a.challenges = challenges
+	return a
+}
+
+// WithJudges enables judge accounts: "Log in as judge", the judge home page,
+// switching between the player and judge views, and the admin's judge list.
+func (a *API) WithJudges(judges JudgeStore) *API {
+	a.judges = judges
 	return a
 }
 
@@ -164,6 +174,9 @@ func (a *API) Routes() http.Handler {
 	if a.users != nil {
 		mux.HandleFunc("GET /api/users/search", a.handleSearchUsers)
 	}
+	if a.judges != nil {
+		a.registerJudgeRoutes(mux)
+	}
 	return mux
 }
 
@@ -195,9 +208,17 @@ func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
-	if user, ok := a.requireUser(w, r); ok {
-		writeJSON(w, http.StatusOK, userResponse{User: user})
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
 	}
+	resp, err := a.sessionInfo(r, user)
+	if err != nil {
+		log.Printf("me: %v", err)
+		writeError(w, http.StatusInternalServerError, "something went wrong")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) handleProviders(w http.ResponseWriter, r *http.Request) {

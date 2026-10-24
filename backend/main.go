@@ -97,7 +97,7 @@ func run() error {
 
 	api := NewAPI(store, providers, phone, cookieSecure).
 		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store).
-		WithPayments(store, paymentProvider).WithChallenges(store)
+		WithPayments(store, paymentProvider).WithChallenges(store).WithJudges(store)
 
 	// Expires challenges past their deadline and refunds whoever paid,
 	// until shutdown. Reads and actions expire them lazily too.

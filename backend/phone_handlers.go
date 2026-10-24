@@ -47,6 +47,8 @@ type phoneStartResponse struct {
 type phoneVerifyRequest struct {
 	Phone string `json:"phone"`
 	Code  string `json:"code"`
+	// As is "judge" for "Log in as judge", and empty or "player" otherwise.
+	As string `json:"as"`
 }
 
 var sixDigits = regexp.MustCompile(`^\d{6}$`)
@@ -71,8 +73,24 @@ func (a *API) handlePhoneVerify(w http.ResponseWriter, r *http.Request) {
 	if !decodeSmallJSON(w, r, &req) {
 		return
 	}
+	// Checked before the code, so a bad request doesn't use it up.
+	switch req.As {
+	case "", SessionPlayer:
+	case SessionJudge:
+		if a.judges == nil {
+			writeError(w, http.StatusNotFound, "judge sign-in isn't available")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, `as must be "player" or "judge"`)
+		return
+	}
 	phone, ok := a.checkCode(w, r, req.Phone, req.Code)
 	if !ok {
+		return
+	}
+	if req.As == SessionJudge {
+		a.finishJudgeLogin(w, r, phone)
 		return
 	}
 

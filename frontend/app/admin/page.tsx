@@ -94,6 +94,9 @@ export default function AdminHomePage() {
           <Button href="/admin/venues" variant="secondary" size="sm">
             Venues
           </Button>
+          <Button href="/admin/judges" variant="secondary" size="sm">
+            Judges
+          </Button>
           <Button href="/admin/events/new" variant="accent" size="sm" startIcon={<PlusIcon />}>
             New event
           </Button>

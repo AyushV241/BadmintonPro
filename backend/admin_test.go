@@ -294,18 +294,29 @@ func TestAdminFlow(t *testing.T) {
 		t.Errorf("updated = %+v", updated.Event)
 	}
 
-	// Judges, by username in any case, with or without "@".
-	var judge judgeResponse
-	if code := api.do("POST", "/api/admin/events/"+ev.ID+"/judges", map[string]string{"username": "@Priya"}, &judge); code != http.StatusCreated {
+	// Judges come from the registered judge list, by account ID. Someone
+	// who isn't registered is refused, even with an account.
+	addJudge := func(userID string) (judgeResponse, int) {
+		var judge judgeResponse
+		return judge, api.do("POST", "/api/admin/events/"+ev.ID+"/judges", map[string]string{"userId": userID}, &judge)
+	}
+	if _, code := addJudge(judgeUser.ID); code != http.StatusBadRequest {
+		t.Errorf("unregistered judge: %d, want 400", code)
+	}
+	if _, err := store.AddJudge(ctx, judgeUser.ID, "Priya Nair", "+919800000002", admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	judge, code := addJudge(judgeUser.ID)
+	if code != http.StatusCreated {
 		t.Fatalf("add judge: %d", code)
 	}
 	if judge.Judge.UserID != judgeUser.ID || judge.Judge.Name != "Priya Nair" {
 		t.Errorf("judge = %+v", judge.Judge)
 	}
-	if code := api.do("POST", "/api/admin/events/"+ev.ID+"/judges", map[string]string{"username": "priya"}, nil); code != http.StatusCreated {
+	if _, code := addJudge(judgeUser.ID); code != http.StatusCreated {
 		t.Errorf("adding again: %d", code)
 	}
-	if code := api.do("POST", "/api/admin/events/"+ev.ID+"/judges", map[string]string{"username": "nobody"}, nil); code != http.StatusNotFound {
+	if _, code := addJudge("usr_nobody"); code != http.StatusBadRequest {
 		t.Errorf("unknown judge: %d", code)
 	}
 	var got adminEventResponse

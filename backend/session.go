@@ -12,9 +12,19 @@ const sessionCookieName = "bp_session"
 // off cross-site POSTs, which covers CSRF for the state-changing endpoints,
 // while still sending it on the top-level redirect back from a provider.
 func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+	return a.startSessionAs(w, r, userID, SessionPlayer)
+}
+
+// startSessionAs starts a session in mode, SessionPlayer or SessionJudge.
+func (a *API) startSessionAs(w http.ResponseWriter, r *http.Request, userID, mode string) error {
 	token, err := a.store.CreateSession(r.Context(), userID)
 	if err != nil {
 		return err
+	}
+	if mode != SessionPlayer {
+		if err := a.store.SetSessionMode(r.Context(), token, mode); err != nil {
+			return err
+		}
 	}
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is config-driven
 		Name:     sessionCookieName,

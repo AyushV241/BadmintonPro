@@ -304,13 +304,15 @@ mode**; it will check roles later (see the design doc, section 10).
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | — | Liveness check |
 | `POST` | `/api/logout` | cookie | Revokes the session and clears the cookie |
-| `GET` | `/api/me` | cookie | The signed-in user, including `username`, contact `email`/`phone` with `emailVerified`/`phoneVerified`, `signInMethod` and `profileComplete` |
+| `GET` | `/api/me` | cookie | `{"user","mode","isJudge"}`. `user`: the signed-in user, including `username`, contact `email`/`phone` with `emailVerified`/`phoneVerified`, `signInMethod` and `profileComplete`. `mode`: `"player"` or `"judge"`, the home page this session lands on. `isJudge`: whether the account is a registered judge right now |
+| `POST` | `/api/me/mode` | cookie | `{"mode":"player"\|"judge"}`: switches the home page without signing in again; returns the same as `GET /api/me`. `"judge"` needs a registered judge (`403` otherwise) |
+| `GET` | `/api/judge/home` | judge | `{"judge","events","matches"}`: the registered judge (`userId`, `name`, `phone`, `username`, `createdAt`), the events they're listed for that haven't ended or been cancelled, and the matches assigned to them that aren't cancelled (including today's finished ones), soonest first, in the shape of `/api/me/matches` without `mySide`. `403` for anyone who isn't a registered judge, checked on every request |
 | `PUT` | `/api/me/profile` | cookie | `{"name","username","email"?}`: the profile step. `email` only for accounts without a verified one (stored unverified; `""` clears it). `409` if the username is taken |
 | `POST` | `/api/me/phone/start` | cookie | `{"phone"}`: texts a code to a phone a Google account wants on its profile. Same validation as phone sign-in. `400` for phone accounts |
 | `POST` | `/api/me/phone/verify` | cookie | `{"phone","code"}`: saves it as a **verified contact phone**. It does not become a way to sign in |
 | `GET` | `/api/auth/providers` | — | Enabled sign-in methods, e.g. `{"providers":["google"],"phone":true}`. `providers` are redirect logins; `phone` is separate because it isn't one |
 | `POST` | `/api/auth/phone/start` | — | `{"phone"}` in any common format; texts a code and returns `{"phone"}` in E.164. The reply is the same whether or not the number has an account. `429` with `Retry-After` if the OTP provider refuses as too many. Only when `OTP_PROVIDER` is set |
-| `POST` | `/api/auth/phone/verify` | — | `{"phone","code"}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code |
+| `POST` | `/api/auth/phone/verify` | — | `{"phone","code","as"?}`; signs in (creating the account on first login) and sets the session cookie. `401` for a wrong or expired code. With `"as":"judge"` ("Log in as judge") only a number an admin registered as a judge gets in, the session starts in judge mode, and the reply is `{"user","mode","isJudge"}`; any other number gets `403` and **no account is created**. The judge check happens after the code, so only the number's owner learns whether it's registered |
 | `GET` | `/api/events` | — | Published events that haven't ended, in start order: `{"events":[…],"nextCursor"}`. `?city=bangalore` filters by venue city. `?lat=&lng=&radiusKm=` keeps venues within that distance (default 10 km, at most 100) and adds `distanceKm` to each event; venues without coordinates drop out. `?limit=` is 1–50 (default 20), and `?cursor=` takes the previous page's `nextCursor` (`null` on the last page). Each event has its `formats`, `slotMinutes` per format, `feePaise`, `capacity`, `maxMatches`, `spotsLeft` (capacity minus live entries), `registrationClosesAt` and an optional Elo band (`ratingMin`/`ratingMax`). Public: it says nothing about who joined |
 | `GET` | `/api/events/{id}` | — | One event with its venue and courts. Drafts are `404`; cancelled and completed events stay visible |
 | `POST` | `/api/events/{id}/entries` | cookie | `{"formats":["singles","doubles"],"partnerUsername"?:"@asha"}`: joins with an **open entry** (one match), `201 {"entry"}` as `pending_payment` with a 10-minute `holdExpiresAt`. A partner only with doubles or mixed. `400` bad formats or partner, `403` profile not set up, `404` unknown event, draft or partner, `409` closed, cancelled, outside the Elo band, already 3 entries, full, or no matches left. Pay for it with `POST /api/me/entries/{id}/pay` |
@@ -338,8 +340,11 @@ mode**; it will check roles later (see the design doc, section 10).
 | `PUT` | `/api/admin/events/{id}` | admin | Same body as create. Drafts only: `409` once published |
 | `POST` | `/api/admin/events/{id}/publish` | admin | Draft → published (players can see it). `409` from any other status or once the start has passed |
 | `POST` | `/api/admin/events/{id}/cancel` | admin | Draft or published → cancelled. Events are never deleted |
-| `POST` | `/api/admin/events/{id}/judges` | admin | `{"username"}` (any case, `@` optional): adds a judge. `404` if no one has that username |
-| `DELETE` | `/api/admin/events/{id}/judges/{userId}` | admin | Removes a judge |
+| `POST` | `/api/admin/events/{id}/judges` | admin | `{"userId"}`: adds a **registered judge** (from `GET /api/admin/judges`). `400` for anyone who isn't registered |
+| `DELETE` | `/api/admin/events/{id}/judges/{userId}` | admin | Removes a judge from the event |
+| `GET` | `/api/admin/judges` | admin | `{"judges":[…]}`: everyone who can log in as judge, by name. Each: `userId`, `name` and `phone` (E.164) as the admin entered them, `username` (empty until they set up a player profile), `createdAt` |
+| `POST` | `/api/admin/judges` | admin | `{"name","phone"}`: registers a judge. The number finds its phone account, or creates one (named after the judge) if it has never signed in, so it's the same account the person plays with. `201 {"judge"}`; `400` bad name or number, `409` already a judge, `503` phone login disabled |
+| `DELETE` | `/api/admin/judges/{userId}` | admin | Removes a judge: they come off the judge list of every event that hasn't ended (matches already scheduled keep them), and judge-mode sessions fall back to player mode. Their account is untouched. `404` if not a judge |
 | `GET` | `/api/admin/events/{id}/entries` | admin | `{"entries":[…]}`, every status, in join order. Each: `id`, `user` (`{"id","username","name"}`), `ratings` (per format of the entry), `kind`, `formats`, `partner`, `source`, `status`, `holdExpiresAt`, `holdExpired`, `matchId`, `standbyReason`, `confirmedBy` (the admin, or `null`), `confirmedAt`, `createdAt` |
 | `POST` | `/api/admin/entries/{id}/mark-paid` | admin | The desk's offline payment (cash or UPI to the venue) for an open entry (`409` for a challenge's, which is paid in the app): `pending_payment` → `confirmed`, recording who and when, and an offline payment for the event's fee (none for a free event), `200 {"entry"}`. An expired hold is fine if the event still has room (capacity, `maxMatches`, 3 per player, checked under the event lock); the registration cutoff doesn't apply. `404` unknown, `409` not pending, event not published or over, or no room |
 | `GET` | `/api/admin/events/{id}/schedule` | admin | The published schedule as saved, in the same shape as the preview, with each player's current rating and the flags worked out again. `404` until it's published, or for an unknown event |
@@ -377,6 +382,15 @@ one return to it. Nothing is ever joined by email or phone number, so signing
 in with a phone and later with Google gives two separate accounts, even for
 the same person. That rules out a whole class of account-hijacking bugs, at
 the cost of possible duplicates.
+
+**Judges are phone accounts an admin has registered** (`judges`), not a
+separate kind of user. An admin adds them under Admin → Judges by name and
+number; they sign in with the quiet "Log in as judge" link on the sign-in
+page (phone only) and land on `/judge`. Signing in normally with the same
+number reaches the same account in player mode, so judges can play too, and
+can switch views from either home page. The session's mode only picks the
+home page; judge endpoints check `judges` on every request. See section 10
+of the design doc.
 
 A provider's email is stored only if the provider vouches for it
 (`EmailVerified`), and then only as contact information.
@@ -487,7 +501,8 @@ BadmintonPro/
 │   ├── api.go               # routes, /api/me, logout
 │   ├── session.go           # session cookie
 │   ├── oauth_handlers.go    # provider-agnostic start + callback
-│   ├── phone_handlers.go    # phone sign-in: send and check codes
+│   ├── phone_handlers.go    # phone sign-in: send and check codes ("as": "judge" too)
+│   ├── judges*.go           # judge accounts: registry, judge sign-in, session mode, judge home
 │   ├── profile_handlers.go  # profile step, contact-phone verification
 │   ├── events.go            # venues, courts, events; EventStore interface
 │   ├── events_postgres.go   # events queries (Postgres only, no in-memory copy)

@@ -152,9 +152,10 @@ type AdminStore interface {
 	SetEventStatus(ctx context.Context, id string, from []string, to string) error
 
 	ListEventJudges(ctx context.Context, eventID string) ([]Judge, error)
-	// AddEventJudge adds the user with this username (any letter case). It
-	// returns ErrNoSuchEvent or ErrNoSuchUser; adding someone twice is fine.
-	AddEventJudge(ctx context.Context, eventID, username string) (Judge, error)
+	// AddEventJudge adds a registered judge (the admin's judge list) to the
+	// event. It returns ErrNoSuchEvent or ErrNotAJudge; adding someone twice
+	// is fine.
+	AddEventJudge(ctx context.Context, eventID, userID string) (Judge, error)
 	RemoveEventJudge(ctx context.Context, eventID, userID string) error
 }
 
