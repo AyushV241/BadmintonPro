@@ -37,7 +37,7 @@ function VersusCard({ c }: { c: Challenge }) {
   return (
     <section
       aria-label="The match"
-      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] dark:border dark:border-[#30342a] dark:bg-[#1c1f18]"
+      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] border border-transparent dark:border-[#30342a] dark:bg-[#1c1f18]"
     >
       <div className="flex items-center justify-between">
         <span className="rounded-full bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-lime">

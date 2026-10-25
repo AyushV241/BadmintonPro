@@ -7,6 +7,7 @@ import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { BottomNav } from "@/components/app/BottomNav";
 import { Switch } from "@/components/form/Switch";
 import { ArrowRightIcon, LogoutIcon, MailIcon, PhoneIcon, ShieldIcon } from "@/components/icons";
+import { useAppearance, type Appearance } from "@/components/ui";
 import { setAdminMode, useAdminMode } from "@/lib/adminMode";
 import { logout, me, myStats, type PlayerStats, type User } from "@/lib/api";
 import { initials } from "@/lib/initials";
@@ -20,7 +21,7 @@ function PlayerCard({ user, stats }: { user: User; stats: PlayerStats | null }) 
   return (
     <section
       aria-label="Player card"
-      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] dark:border dark:border-[#30342a] dark:bg-[#1c1f18]"
+      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] border border-transparent dark:border-[#30342a] dark:bg-[#1c1f18]"
     >
       <div className="flex items-center gap-3.5">
         <Avatar text={initials(user.name, user.username)} color={avatarColors.lime} size={64} />
@@ -53,6 +54,42 @@ function PlayerCard({ user, stats }: { user: User; stats: PlayerStats | null }) 
         ))}
       </div>
     </section>
+  );
+}
+
+const APPEARANCES: { value: Appearance; label: string }[] = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+/** Light or Dark, remembered on this device; it starts as the phone's own. */
+function AppearancePicker() {
+  const { appearance, setAppearance } = useAppearance();
+  return (
+    <div className="flex flex-col gap-2.5 rounded-[20px] border border-line bg-surface px-4 py-3.5">
+      <span className="text-[15px] font-semibold">Appearance</span>
+      <div role="radiogroup" aria-label="Appearance" className="grid grid-cols-2 gap-1 rounded-[14px] bg-background p-1">
+        {APPEARANCES.map((a) => {
+          const on = appearance === a.value;
+          return (
+            <button
+              key={a.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={(ev) => {
+                // The new theme spreads from the button that was tapped.
+                const r = ev.currentTarget.getBoundingClientRect();
+                setAppearance(a.value, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+              }}
+              className={`min-h-11 rounded-[11px] text-sm font-semibold transition-colors ${on ? "bg-surface text-foreground shadow-sm" : "text-muted"}`}
+            >
+              {a.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -115,6 +152,7 @@ function ProfileView({ user }: { user: User }) {
 
         <section className="flex flex-col gap-2">
           <Eyebrow>Settings</Eyebrow>
+          <AppearancePicker />
           {/* Open to everyone for now; later only people with the admin role see it. */}
           <Switch
             checked={adminMode}

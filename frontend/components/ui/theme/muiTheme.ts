@@ -41,8 +41,10 @@ function palette(mode: "light" | "dark") {
 }
 
 export const muiTheme = createTheme({
-  // Follow the OS setting, like the Tailwind `dark:` variants in the pages.
-  cssVariables: { colorSchemeSelector: "media" },
+  // An attribute on <html> picks the scheme: "System" (the default) follows
+  // the device, or the player chooses Light or Dark on their profile.
+  // Tailwind's `dark:` variant reads the same attribute (globals.css).
+  cssVariables: { colorSchemeSelector: "data-mui-color-scheme" },
   colorSchemes: {
     light: { palette: palette("light") },
     dark: { palette: palette("dark") },

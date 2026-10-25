@@ -124,7 +124,7 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
 
           <section
             aria-label="Your entry"
-            className="flex flex-col gap-3.5 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] dark:border dark:border-[#30342a] dark:bg-[#1c1f18]"
+            className="flex flex-col gap-3.5 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] border border-transparent dark:border-[#30342a] dark:bg-[#1c1f18]"
           >
             <div className="flex flex-col gap-1">
               <p className="text-[11px] font-semibold tracking-[0.14em] text-[#a3a596] uppercase">Formats you&rsquo;ll play</p>

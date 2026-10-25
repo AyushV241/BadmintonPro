@@ -2,6 +2,7 @@
 // a primitive's folder, and never from @mui/* (ESLint enforces both).
 
 export { UIProvider } from "./provider/UIProvider";
+export { ColorSchemeScript, useAppearance, type Appearance } from "./provider/ColorScheme";
 export type { BaseProps, SelectOption, Size, Tone } from "./shared/types";
 
 export * from "./primitives/Accordion";
