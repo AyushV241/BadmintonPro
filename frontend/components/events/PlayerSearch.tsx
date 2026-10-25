@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { Input } from "@/components/ui";
 import { searchUsers, type PublicUser } from "@/lib/api";
@@ -13,15 +13,15 @@ function normalise(q: string) {
   return q.trim().replace(/^@/, "").toLowerCase();
 }
 
-/** The username with the part that matched in bold. */
-function Highlighted({ username, q }: { username: string; q: string }) {
-  const at = q ? username.indexOf(q) : -1;
-  if (at < 0) return <>@{username}</>;
+/** text with the part matching q in bold, matched without letter case. */
+function Highlighted({ text, q }: { text: string; q: string }) {
+  const at = q ? text.toLowerCase().indexOf(q) : -1;
+  if (at < 0) return <>{text}</>;
   return (
     <>
-      @{username.slice(0, at)}
-      <strong className="font-bold text-foreground">{username.slice(at, at + q.length)}</strong>
-      {username.slice(at + q.length)}
+      {text.slice(0, at)}
+      <strong className="font-bold text-foreground">{text.slice(at, at + q.length)}</strong>
+      {text.slice(at + q.length)}
     </>
   );
 }
@@ -29,10 +29,21 @@ function Highlighted({ username, q }: { username: string; q: string }) {
 type Results = { q: string; users: PublicUser[] } | { q: string; error: string };
 
 /**
- * Search players by username (design doc, section 13). Waits for typing to
- * pause, cancels the request it replaces, and ignores late answers.
+ * Search players by name or username (design doc, section 13). Waits for
+ * typing to pause, cancels the request it replaces, and ignores late answers.
+ * `empty` is shown while nothing is typed, e.g. suggested players.
  */
-export function PlayerSearch({ id, label, onPick }: { id: string; label: string; onPick: (u: PublicUser) => void }) {
+export function PlayerSearch({
+  id,
+  label = "Search by name or username",
+  onPick,
+  empty,
+}: {
+  id: string;
+  label?: string;
+  onPick: (u: PublicUser) => void;
+  empty?: ReactNode;
+}) {
   const [text, setText] = useState("");
   const [results, setResults] = useState<Results | null>(null);
   const q = normalise(text);
@@ -67,8 +78,7 @@ export function PlayerSearch({ id, label, onPick }: { id: string; label: string;
         type="search"
         value={text}
         onChange={setText}
-        placeholder="username"
-        startAdornment="@"
+        placeholder="Name or @username"
         autoComplete="off"
         maxLength={41}
       />
@@ -79,7 +89,7 @@ export function PlayerSearch({ id, label, onPick }: { id: string; label: string;
         </p>
       )}
       {current && "users" in current && current.users.length === 0 && (
-        <p className="px-1 text-sm text-muted">No player called @{q}</p>
+        <p className="px-1 text-sm text-muted">No player matches &ldquo;{text.trim()}&rdquo;</p>
       )}
       {current && "users" in current && current.users.length > 0 && (
         <ul className="overflow-hidden rounded-[20px] border border-line bg-surface">
@@ -92,9 +102,11 @@ export function PlayerSearch({ id, label, onPick }: { id: string; label: string;
               >
                 <Avatar text={initials(u.name, u.username)} color={avatarColors.blue} size={40} />
                 <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-[15px] font-semibold">{u.name}</span>
+                  <span className="truncate text-[15px] font-semibold">
+                    <Highlighted text={u.name} q={q} />
+                  </span>
                   <span className="truncate text-[13px] text-muted">
-                    <Highlighted username={u.username} q={q} />
+                    @<Highlighted text={u.username} q={q} />
                   </span>
                 </span>
               </button>
@@ -102,6 +114,7 @@ export function PlayerSearch({ id, label, onPick }: { id: string; label: string;
           ))}
         </ul>
       )}
+      {!q && empty}
     </div>
   );
 }

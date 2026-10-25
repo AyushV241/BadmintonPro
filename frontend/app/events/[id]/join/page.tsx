@@ -262,7 +262,6 @@ function JoinForm({ event: e }: { event: BadmintonEvent }) {
         <div className="pb-4">
           <PlayerSearch
             id="partner-search"
-            label="Search by username"
             onPick={(u) => {
               setPartner(u);
               clear("partner");

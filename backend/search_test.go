@@ -54,13 +54,31 @@ func assertUsernames(t *testing.T, q string, got []string, want ...string) {
 	}
 }
 
+// searchPlayer is player() with a name no query in these tests matches. The
+// default name, "Player <username>", contains the username, so every
+// username search would match on the name as well.
+func searchPlayer(t *testing.T, store *PostgresStore, srv *httptest.Server, n int, username string) (adminClient, User) {
+	t.Helper()
+	return namedPlayer(t, store, srv, n, username, "Zed Quill")
+}
+
+func namedPlayer(t *testing.T, store *PostgresStore, srv *httptest.Server, n int, username, name string) (adminClient, User) {
+	t.Helper()
+	c, u := player(t, store, srv, n, username)
+	u, err := store.UpdateProfile(context.Background(), u.ID, ProfileUpdate{Name: name, Username: username})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, u
+}
+
 func TestSearchUsersRanking(t *testing.T) {
 	store, srv := entriesTestServer(t)
-	me, _ := player(t, store, srv, 1, "searcher")
+	me, _ := searchPlayer(t, store, srv, 1, "searcher")
 	// similarity to "priya": priya_k 0.75, priyam 0.625, priyanka 0.5,
 	// supriya 0.4, prya and riya 0.375, pablo 0.09.
 	for i, name := range []string{"priyanka", "supriya", "prya", "riya", "pablo", "priya_k", "priya"} {
-		player(t, store, srv, 10+i, name)
+		searchPlayer(t, store, srv, 10+i, name)
 	}
 
 	// Exact, then prefix (closest first), then contains; fewer than five, so
@@ -68,7 +86,7 @@ func TestSearchUsersRanking(t *testing.T) {
 	assertUsernames(t, "priya", search(me, " @Priya "), "priya", "priya_k", "priyanka", "supriya", "prya", "riya")
 
 	// Five matches without fuzzy: no fuzzy ones are added.
-	player(t, store, srv, 20, "priyam")
+	searchPlayer(t, store, srv, 20, "priyam")
 	assertUsernames(t, "priya", search(me, "priya"), "priya", "priya_k", "priyam", "priyanka", "supriya")
 
 	// No fuzzy matching under three characters.
@@ -81,9 +99,9 @@ func TestSearchUsersRanking(t *testing.T) {
 
 func TestSearchUsersEscapesLike(t *testing.T) {
 	store, srv := entriesTestServer(t)
-	me, _ := player(t, store, srv, 1, "searcher")
+	me, _ := searchPlayer(t, store, srv, 1, "searcher")
 	for i, name := range []string{"a_bc", "axb", "abc"} {
-		player(t, store, srv, 10+i, name)
+		searchPlayer(t, store, srv, 10+i, name)
 	}
 	// "_" is a literal underscore, not "any character": axb doesn't match.
 	assertUsernames(t, "a_b", search(me, "a_b"), "a_bc")
@@ -94,9 +112,9 @@ func TestSearchUsersEscapesLike(t *testing.T) {
 
 func TestSearchUsersPrivacy(t *testing.T) {
 	store, srv := entriesTestServer(t)
-	me, _ := player(t, store, srv, 1, "asha")
-	player(t, store, srv, 2, "ashwin")
-	_, noName := player(t, store, srv, 3, "ashok")
+	me, _ := searchPlayer(t, store, srv, 1, "asha")
+	searchPlayer(t, store, srv, 2, "ashwin")
+	_, noName := searchPlayer(t, store, srv, 3, "ashok")
 	if _, err := store.pool.Exec(context.Background(), `UPDATE users SET name = '' WHERE id = $1`, noName.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +158,8 @@ func TestSearchUsersRateLimit(t *testing.T) {
 	api.searchLimit = newLimiter(2, time.Minute)
 	srv := httptest.NewServer(api.Routes())
 	t.Cleanup(srv.Close)
-	me, _ := player(t, store, srv, 1, "asha")
-	other, _ := player(t, store, srv, 2, "ravi")
+	me, _ := searchPlayer(t, store, srv, 1, "asha")
+	other, _ := searchPlayer(t, store, srv, 2, "ravi")
 
 	search(me, "ra")
 	search(me, "rav")
@@ -159,4 +177,81 @@ func TestSearchUsersRateLimit(t *testing.T) {
 	}
 	// The limit is per user.
 	assertUsernames(t, "asha", search(other, "asha"), "asha")
+}
+
+func TestSearchUsersByName(t *testing.T) {
+	store, srv := entriesTestServer(t)
+	me, _ := namedPlayer(t, store, srv, 1, "searcher", "Zed Quill")
+	namedPlayer(t, store, srv, 10, "ayush_v", "Ayush Verma")
+	namedPlayer(t, store, srv, 11, "kiran_k", "Kiran Verma")
+	namedPlayer(t, store, srv, 12, "xkirx", "Zed Quill")
+	namedPlayer(t, store, srv, 13, "rohan", "Rohan Mehta")
+
+	// A full name, any letter case, is an exact match and comes first.
+	// (With so few matches, similar names follow fuzzily: Kiran Verma.)
+	if got := search(me, "Ayush Verma"); len(got) == 0 || got[0] != "ayush_v" {
+		t.Errorf(`search "Ayush Verma" = %v, want ayush_v first`, got)
+	}
+
+	// The start of any word of a name: both Vermas, not the others.
+	got := search(me, "ver")
+	if !slices.Contains(got, "ayush_v") || !slices.Contains(got, "kiran_k") || slices.Contains(got, "rohan") {
+		t.Errorf(`search "ver" = %v, want both Vermas`, got)
+	}
+
+	// The closer of name and username counts: "kir" starts Kiran's name
+	// (tier 2), so Kiran comes before a username that only contains it
+	// (tier 3).
+	assertUsernames(t, "kir", search(me, "kir"), "kiran_k", "xkirx")
+
+	// Usernames still match on their own.
+	assertUsernames(t, "rohan", search(me, "@rohan"), "rohan")
+
+	// A misspelt name is found fuzzily.
+	if got := search(me, "aysh"); !slices.Contains(got, "ayush_v") {
+		t.Errorf(`search "aysh" = %v, want the fuzzy match ayush_v`, got)
+	}
+}
+
+func TestSuggestPlayers(t *testing.T) {
+	store, srv := entriesTestServer(t)
+	ctx := context.Background()
+	me, meUser := namedPlayer(t, store, srv, 1, "searcher", "Zed Quill")
+	_, close1 := namedPlayer(t, store, srv, 10, "close_up", "Close Up")
+	_, close2 := namedPlayer(t, store, srv, 11, "close_down", "Close Down")
+	_, far := namedPlayer(t, store, srv, 12, "far_away", "Far Away")
+	_, noName := namedPlayer(t, store, srv, 13, "no_name", "No Name")
+	for _, r := range []struct {
+		id     string
+		rating int
+	}{{meUser.ID, 1300}, {close1.ID, 1310}, {close2.ID, 1280}, {far.ID, 1700}} {
+		if _, err := store.pool.Exec(ctx,
+			`INSERT INTO player_ratings (user_id, discipline, rating) VALUES ($1, 'singles', $2)`, r.id, r.rating); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE users SET name = '' WHERE id = $1`, noName.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp struct{ Players []Player }
+	if code := me.do("GET", "/api/players/suggested", nil, &resp); code != http.StatusOK {
+		t.Fatalf("suggested: %d", code)
+	}
+	var got []string
+	for _, p := range resp.Players {
+		got = append(got, p.Username)
+	}
+	// Closest rating first; never the searcher or an incomplete profile.
+	if want := []string{"close_up", "close_down", "far_away"}; !slices.Equal(got, want) {
+		t.Errorf("suggested = %v, want %v", got, want)
+	}
+	if resp.Players[0].Rating != 1310 {
+		t.Errorf("rating = %d, want 1310", resp.Players[0].Rating)
+	}
+
+	anon := adminClient{t: t, srv: srv}
+	if code := anon.do("GET", "/api/players/suggested", nil, nil); code != http.StatusUnauthorized {
+		t.Errorf("without a session: %d", code)
+	}
 }

@@ -173,6 +173,7 @@ func (a *API) Routes() http.Handler {
 	}
 	if a.users != nil {
 		mux.HandleFunc("GET /api/users/search", a.handleSearchUsers)
+		mux.HandleFunc("GET /api/players/suggested", a.handleSuggestPlayers)
 	}
 	if a.judges != nil {
 		a.registerJudgeRoutes(mux)

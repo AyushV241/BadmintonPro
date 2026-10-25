@@ -871,31 +871,50 @@ event cancelled, or no slot left).
 
 ---
 
-## 13. Search: usernames and venues (Proposed)
+## 13. Search: players by name or username, and venues (Built for players)
 
 One search behaviour for players (challenges, adding judges, the walk-in
 desk) and later venues.
 
-**Ranking.** Results come back in tiers, best first:
+**Players match on their name or their username, whichever is closer**
+(Decided with Ayush). `GET /api/users/search?q=` takes either: "Ayush",
+"ayush verma", "ver" or "@ayush_v".
+
+**Ranking.** Results come back in tiers, best first. A player's tier is the
+better of their name's and their username's:
 
 | Tier | Rule | Example for "ash" |
 | --- | --- | --- |
-| 1. Exact | The username is exactly the query | `ash` |
-| 2. Prefix | The username starts with the query | `asha_rao` |
-| 3. Contains | The query appears inside the username | `prakash` |
-| 4. Fuzzy | Similar spelling | `aash` |
+| 1. Exact | The username, or the whole name, is the query | `ash`; "Ash" |
+| 2. Prefix | The username or the name starts with the query, or any word of the name does | `asha_rao`; "Ashwin K"; "Priya Ashok" |
+| 3. Contains | The query appears inside the username or the name | `prakash`; "Akash Rao" |
+| 4. Fuzzy | Similar spelling of either | `aash`; "Ayush" for "aysh" |
 
-Within a tier: closest similarity first, then shorter names, then
-alphabetical. For venues, distance breaks ties within a tier.
+Within a tier: closest first (the higher of the username's similarity and
+the name's word similarity, which scores the query against the
+best-matching part of the name), then shorter usernames, then alphabetical.
+For venues, distance breaks ties within a tier.
+
+**Before anything is typed** (built on the challenge screen), players are
+suggested so the list is never empty:
+
+1. **Recent players:** people you've played or challenged.
+2. **Players near you:** regulars at venues near you, if location is
+   allowed.
+3. **Players at your level:** the closest singles ratings to yours
+   (`GET /api/players/suggested`, 10 players). This works with no location
+   and no history.
+
+Each player is listed once, in the first list they belong to.
 
 **Backend:**
 
 - Tiers 1–3 run first. Fuzzy matches are added only when they return fewer
   than about 5 results, and only for queries of 3 or more characters;
   fuzzy matching on one or two letters is noise.
-- Fuzzy matching uses Postgres's `pg_trgm` extension (Neon supports it). A
-  trigram GIN index on `lower(username)` serves both the "contains" and
-  fuzzy tiers.
+- Fuzzy matching uses Postgres's `pg_trgm` extension (Neon supports it).
+  Trigram GIN indexes on `lower(username)` and `lower(name)` (`000014`)
+  serve the "contains" and fuzzy tiers; a search uses both at once.
 - Escape `_`, `%` and `\` in the query before using it in `LIKE`.
   Otherwise "a_b" matches "axb", and `_` is common in usernames.
 - Results carry only public fields: name, @username and rating, never phone
@@ -908,8 +927,9 @@ alphabetical. For venues, distance breaks ties within a tier.
 - Search about 250 ms after typing stops.
 - Cancel the previous request when a new one starts (`AbortController`),
   and ignore responses that arrive out of order.
-- Strip a leading `@` and lowercase the query.
-- Bold the matched part of each result.
+- Strip a leading `@` and lowercase the query. The field says "Name or
+  @username".
+- Bold the matched part of each result, in the name and the username.
 - Show clear loading, empty and error states.
 
 ---

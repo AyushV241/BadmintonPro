@@ -11,14 +11,17 @@ import { ChevronLeftIcon } from "@/components/icons";
 import {
   ApiError,
   me,
+  nearbyPlayers,
   recentPlayers,
   searchUsers,
   sendChallenge,
+  suggestedPlayers,
   type BadmintonEvent,
   type Player,
   type PublicUser,
 } from "@/lib/api";
 import { clockTime, dateTile, rupees } from "@/lib/eventTime";
+import { currentPosition } from "@/lib/location";
 import { initials } from "@/lib/initials";
 import { useFormErrors } from "@/lib/useFormErrors";
 import { useNearbyEvents } from "@/lib/useNearbyEvents";
@@ -54,39 +57,81 @@ function Eyebrow({ children }: { children: string }) {
 const optionClass = (on: boolean) =>
   `min-h-11 rounded-xl px-3.5 text-sm font-semibold ${on ? "bg-primary text-on-primary" : "border border-line bg-surface"}`;
 
+function PlayerList({ title, players, onPick }: { title: string; players: Player[]; onPick: (p: Player) => void }) {
+  return (
+    <section className="flex flex-col gap-2">
+      <Eyebrow>{title}</Eyebrow>
+      <ul className="overflow-hidden rounded-[20px] border border-line bg-surface">
+        {players.map((p) => (
+          <li key={p.id} className="border-b border-line last:border-b-0">
+            <button type="button" onClick={() => onPick(p)} className="flex min-h-16 w-full items-center gap-3 px-3.5 py-2 text-left">
+              <Avatar text={initials(p.name, p.username)} color={avatarColors.blue} size={44} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[15px] font-semibold">{p.name}</span>
+                <span className="truncate text-[13px] text-muted">@{p.username}</span>
+              </span>
+              <span className="flex flex-col items-end">
+                <span className="text-[15px] font-semibold">{p.rating}</span>
+                <span className="text-[10px] font-semibold tracking-[0.12em] text-muted">SINGLES</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Who to challenge. Before anything is typed it suggests people: those you've
+ * played or challenged, then regulars near you (if location is allowed),
+ * then players at your level, so the list is never empty. Typing searches
+ * by name or username instead.
+ */
 function PickPlayer({ onPick }: { onPick: (p: PublicUser | Player) => void }) {
   const [recent, setRecent] = useState<Player[] | null>(null);
+  const [nearby, setNearby] = useState<Player[]>([]);
+  const [level, setLevel] = useState<Player[] | null>(null);
+
   useEffect(() => {
     recentPlayers()
       .then(setRecent)
       .catch(() => setRecent([]));
+    suggestedPlayers()
+      .then(setLevel)
+      .catch(() => setLevel([]));
+    currentPosition()
+      .then(({ coords }) => nearbyPlayers(coords.latitude, coords.longitude))
+      .then(setNearby)
+      .catch(() => {
+        /* no location: the other lists still show */
+      });
   }, []);
+
+  // Each player appears once, in the first list they're in.
+  const seen = new Set((recent ?? []).map((p) => p.id));
+  const nearbyOnly = nearby.filter((p) => !seen.has(p.id) && seen.add(p.id));
+  const levelOnly = (level ?? []).filter((p) => !seen.has(p.id));
+  const loading = recent === null || level === null;
+
+  const suggestions = loading ? (
+    <div aria-busy="true" aria-label="Loading players" className="flex flex-col gap-2">
+      <span className="h-16 animate-pulse rounded-[20px] bg-line" />
+      <span className="h-16 animate-pulse rounded-[20px] bg-line" />
+    </div>
+  ) : recent.length + nearbyOnly.length + levelOnly.length === 0 ? (
+    <p className="px-1 text-sm text-muted">No other players yet. Search for someone by name or username.</p>
+  ) : (
+    <div className="flex flex-col gap-5">
+      {recent.length > 0 && <PlayerList title="Recent players" players={recent} onPick={onPick} />}
+      {nearbyOnly.length > 0 && <PlayerList title="Players near you" players={nearbyOnly} onPick={onPick} />}
+      {levelOnly.length > 0 && <PlayerList title="Players at your level" players={levelOnly} onPick={onPick} />}
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-5 px-5 pt-2">
-      <PlayerSearch id="challenge-search" label="Search by username" onPick={onPick} />
-      {recent && recent.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <Eyebrow>Recent players</Eyebrow>
-          <ul className="overflow-hidden rounded-[20px] border border-line bg-surface">
-            {recent.map((p) => (
-              <li key={p.id} className="border-b border-line last:border-b-0">
-                <button type="button" onClick={() => onPick(p)} className="flex min-h-16 w-full items-center gap-3 px-3.5 py-2 text-left">
-                  <Avatar text={initials(p.name, p.username)} color={avatarColors.blue} size={44} />
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[15px] font-semibold">{p.name}</span>
-                    <span className="truncate text-[13px] text-muted">@{p.username}</span>
-                  </span>
-                  <span className="flex flex-col items-end">
-                    <span className="text-[15px] font-semibold">{p.rating}</span>
-                    <span className="text-[10px] font-semibold tracking-[0.12em] text-muted">SINGLES</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <PlayerSearch id="challenge-search" onPick={onPick} empty={suggestions} />
     </div>
   );
 }

@@ -844,3 +844,12 @@ export type PlayerStats = { ratings: Record<EventFormat, number>; played: number
 export function myStats(): Promise<PlayerStats> {
   return request<PlayerStats>("/api/me/stats");
 }
+
+/**
+ * Players at the signed-in player's level, closest singles rating first, so
+ * picking someone never starts from an empty list.
+ */
+export async function suggestedPlayers(): Promise<Player[]> {
+  const { players } = await request<{ players: Player[] }>("/api/players/suggested");
+  return players;
+}
