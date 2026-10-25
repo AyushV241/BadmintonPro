@@ -77,6 +77,11 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+	// Which rating players see; every system rates every match regardless.
+	if err := store.UseRatingSystem(os.Getenv("RATING_SYSTEM")); err != nil {
+		return err
+	}
+	log.Printf("ratings: %s shown to players", store.ratings.primary.Name())
 
 	providers, err := configureProviders()
 	if err != nil {
@@ -97,7 +102,7 @@ func run() error {
 
 	api := NewAPI(store, providers, phone, cookieSecure).
 		WithEvents(store).WithAdmin(store).WithEntries(store).WithMatches(store).WithUserSearch(store).
-		WithPayments(store, paymentProvider).WithChallenges(store).WithJudges(store)
+		WithPayments(store, paymentProvider).WithChallenges(store).WithJudges(store).WithScoring(store)
 
 	// Expires challenges past their deadline and refunds whoever paid,
 	// until shutdown. Reads and actions expire them lazily too.
@@ -106,11 +111,18 @@ func run() error {
 		defer close(sweeperDone)
 		api.sweepChallenges(ctx)
 	}()
+	// Live score changes made through any server reach this one's viewers.
+	// Deferred after store.Close, so it runs first: the listener must hand
+	// its connection back before the pool can close.
+	defer startLiveListener(ctx, store.pool, api.live)()
+
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
 		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	// Live-score streams never finish on their own; end them on shutdown.
+	srv.RegisterOnShutdown(api.live.shutdown)
 
 	// Shut down cleanly on Ctrl-C so in-flight requests finish.
 	go func() {

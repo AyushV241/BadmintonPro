@@ -317,6 +317,12 @@ func seedDemo(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 				}
 			}
 		}
+		// rating_states arrives with migration 000015; seeding still works
+		// on a database that hasn't got it yet.
+		var hasRatingStates bool
+		if err := tx.QueryRow(ctx, `SELECT to_regclass('rating_states') IS NOT NULL`).Scan(&hasRatingStates); err != nil {
+			return fmt.Errorf("check rating_states: %w", err)
+		}
 		for _, p := range demoPlayers {
 			for discipline, rating := range map[string]int{
 				FormatSingles: p.singles, FormatDoubles: p.doubles, FormatMixed: p.doubles - 20,
@@ -328,6 +334,14 @@ func seedDemo(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 						provisional = false, updated_at = now()`,
 					p.id, discipline, rating,
 				); err != nil {
+					return fmt.Errorf("rating %s: %w", p.id, err)
+				}
+				// Every rating system starts again from the seeded rating.
+				if !hasRatingStates {
+					continue
+				}
+				if _, err := tx.Exec(ctx, `DELETE FROM rating_states WHERE user_id = $1 AND discipline = $2`,
+					p.id, discipline); err != nil {
 					return fmt.Errorf("rating %s: %w", p.id, err)
 				}
 			}

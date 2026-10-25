@@ -34,7 +34,11 @@ type API struct {
 	challenges ChallengeStore
 	// judges is nil without a database too; judge sign-in, the judge home
 	// page and the admin's judge list are then not registered.
-	judges      JudgeStore
+	judges JudgeStore
+	// scoring is nil without a database too; live scoring is then not
+	// registered. live fans its changes out to the streams watching them.
+	scoring     ScoringStore
+	live        *liveHub
 	searchLimit *limiter
 	providers   *oauth.Registry
 	// phone is nil when phone login is disabled.
@@ -98,6 +102,14 @@ func (a *API) WithChallenges(challenges ChallengeStore) *API {
 // switching between the player and judge views, and the admin's judge list.
 func (a *API) WithJudges(judges JudgeStore) *API {
 	a.judges = judges
+	return a
+}
+
+// WithScoring enables live scoring: watching a match, and its judge
+// starting, scoring and finishing it. It needs WithJudges too.
+func (a *API) WithScoring(scoring ScoringStore) *API {
+	a.scoring = scoring
+	a.live = newLiveHub()
 	return a
 }
 
@@ -177,6 +189,9 @@ func (a *API) Routes() http.Handler {
 	}
 	if a.judges != nil {
 		a.registerJudgeRoutes(mux)
+	}
+	if a.judges != nil && a.scoring != nil {
+		a.registerScoringRoutes(mux)
 	}
 	return mux
 }

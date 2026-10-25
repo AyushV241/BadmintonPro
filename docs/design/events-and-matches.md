@@ -32,7 +32,7 @@ A player can hold several entries in the same event, such as one open
 entry and one challenge, and pays for each. Every match gets a court, a
 time and a **judge**. The judge scores the match live on their phone, and
 players and spectators see the score update in real time. When the match
-ends, both sides' **Elo ratings** change. Players who turn up at the venue
+ends, both sides' **ratings** change (Glicko). Players who turn up at the venue
 can still buy an entry if there are free slots.
 
 Matches with no event at all, where two players arrange a game themselves
@@ -54,7 +54,7 @@ matches separate from events so that can be added without a redesign.
 | **Slot** | One court for one block of time, e.g. Court 2, 19:30–20:00. Each match uses exactly one slot. |
 | **Match** | Two sides playing each other in one slot. A side is one player (singles) or two (doubles). |
 | **Judge** | The person who scores a match live. Each match needs one. |
-| **Rating** | A player's Elo rating for a discipline. The expected range is about 1200–2000. |
+| **Rating** | A player's rating for a discipline: Glicko's, with Elo kept alongside for comparison (section 9). Everyone starts at 1200. |
 | **Challenge** | One player's request to play a named opponent at a chosen event and time. Once accepted and paid, it becomes two locked entries (section 12). |
 | **Admin mode** | The part of the app for running events (section 10). |
 
@@ -184,17 +184,18 @@ matches separate from events so that can be added without a redesign.
 2. **No-shows.** A player who misses a match is a no-show for that match:
    - its slot opens up for a walk-in or someone on standby (section 7);
    - their opponent gets a **walkover**, which doesn't change anyone's
-     rating (Proposed);
-   - the no-show loses that entry's fee.
+     rating (Decided, built: section 8);
+   - the no-show loses that entry's fee: the walkover marks their entry
+     `no_show`.
 3. **Live scoring.** The judge starts the match and scores each point
    (section 8). Players and spectators watch it live.
 
-### 4.5 After the match (Decided: the rating changes)
+### 4.5 After the match (Decided, built: the rating changes)
 
 - The judge ends the match, and the server records the result.
 - Ratings update in the same transaction (section 9).
-- Each player sees their rating change, e.g. 1480 → 1498 (+18), and the
-  leaderboard moves.
+- Each player sees their rating change on the match's live screen, e.g.
+  "Rating 1498 (+18)". The leaderboard isn't built yet.
 
 ---
 
@@ -444,6 +445,54 @@ The match uses the player's real rating for that format.
 
 ## 8. Live scoring (Decided: the judge scores, the score updates in real time)
 
+**Built** (build step 8, migration `000013`):
+
+1. **The judge starts the match.** From the judge home, the match's judge
+   opens it and taps **Start match**, choosing who serves first (the toss).
+   That's allowed from 60 minutes before the slot, and only for a
+   `scheduled` or `ready` match, which becomes `live`.
+2. **The judge scores it** on the judge console: one big button per side, an
+   Undo, and **Finish match** once a side has won two games. Taps show at
+   once and are queued in the browser, so a dropped connection loses
+   nothing; they're sent in order and the server confirms each.
+3. **Players watch it live**: the live screen (`/matches/{id}/live`), the
+   first card of the home page's carousel (the live match, then their next
+   match, then the next event near them), and a "Watch live" link on their
+   matches.
+4. **Finishing records the result** (`completed`, `winner_side`) and rates
+   the match (section 9).
+5. **Ending any other way** (build step 9, migration `000015`):
+   - **Retired:** a player is injured or can't go on. The judge taps
+     "Player injured? End the match early" and picks the side. The other
+     side wins (`retired`, `retired_side`), and the match is rated on the
+     points played (section 9). Only for a live match that isn't decided
+     yet: a decided one is finished instead.
+   - **Walkover:** a side never turned up. Before starting, the judge taps
+     "Someone didn't turn up" and picks the side that's there; an admin can
+     do the same for any match. The match becomes `walkover`, isn't rated,
+     and the absent side's entries become `no_show` (no refund). Allowed
+     from the same time as starting, and only for a match that hasn't
+     started.
+   - **Void:** an admin strikes off a match that started or ended, with a
+     reason (up to 200 characters). The match becomes `void`, keeps its
+     result on the row as a record (`voided_at`, `voided_by`,
+     `void_reason`, `voided_from`), and its rating changes are reversed.
+     Voiding a walkover gives its `no_show` entries back (`scheduled`). A
+     live match that's voided stops: the judge can't add points.
+   - The live screen says how it ended ("You retired", "You won by
+     walkover", "Void: this match doesn't count" with the reason), with the
+     viewer's rating change. A match that ended before any game was won
+     shows the points, not 0:0 in games.
+
+Only the match's own judge can start, score, finish, retire or record a
+walkover on it. It's checked on every request: a registered judge, and the
+match's `judge_id`. Admin scoring isn't built while admin mode is open to
+everyone. **Admin walkover and void are built, and so for now open to
+anyone signed in, like every admin route** (section 10); restrict them when
+admin roles exist. Scoring never edits a
+fixture: fixture editing only touches `scheduled` and `ready` matches
+(section 10), and both lock the match row, so a move racing a start waits.
+
 **Rules** (Proposed, BWF standard, configurable per event):
 
 - Rally scoring to 21.
@@ -459,18 +508,34 @@ The match uses the player's real rating for that format.
   that gets edited.
 - **Undo** adds a new "undo" row; nothing is deleted.
 - The client ID makes retries safe: a resent point isn't counted twice.
+- **Built as:** `match_points (match_id, seq, kind, side, client_id,
+  judge_id, created_at)`, with `seq` 1, 2, 3 … and no gaps. A point sent out
+  of turn gets 409 with the `nextSeq` the server expects, so the console
+  resends its queue from there. The serve follows the rallies: the toss
+  (`matches.first_server`), then the rally winner, and the winner of a game
+  serves first in the next.
 
 **What the server checks:**
 
-- Only the match's assigned judge (or an admin) can add points.
-- No points after the match has ended.
+- Only the match's assigned judge can add points (an admin too, once roles
+  exist).
+- No points after the match has ended, whichever way it ended.
 - Game and match ends follow the rules above.
 
 **Real-time updates:**
 
 - Players and spectators get updates over **server-sent events**:
-  `GET /api/matches/{id}/live`. It's one-way, simpler than WebSockets, and
-  works through the Next.js proxy.
+  `GET /api/matches/{id}/live/stream` (and the state once from
+  `GET /api/matches/{id}/live`). It's one-way and simpler than WebSockets.
+  Tested through the Next.js proxy: events arrive within tens of
+  milliseconds, unbuffered. Anyone signed in can watch.
+- **Across server instances:** every write sends a Postgres `NOTIFY` on
+  `match_live` inside its transaction, and every server `LISTEN`s, so a
+  point scored through one server reaches viewers connected to another.
+  Each event carries the whole match state, so a missed or doubled
+  signal can't leave a viewer wrong. A stream sends nothing when nothing
+  changed, keeps idle connections open with a heartbeat every 15 s, and
+  ends after the final state.
 - The judge sends points as normal POST requests.
 
 **Bad connections:** the judge's app keeps unsent points in a queue and
@@ -484,61 +549,217 @@ order right.
 | `scheduled` | Assigned a slot, not yet ready |
 | `ready` | Both sides checked in |
 | `live` | The judge has started scoring |
-| `completed` | Finished and scored |
-| `walkover` | One side didn't show up |
-| `cancelled` | Called off |
+| `completed` | Played out and rated |
+| `retired` | A side couldn't go on; the other won. Rated on points played |
+| `walkover` | One side didn't show up; the other won. Not rated |
+| `cancelled` | Called off before it started (fixture editing) |
+| `void` | Struck off by an admin after it started or ended; rating changes reversed |
+
+**Endpoints:**
+
+| Method and path | Who | What |
+| --- | --- | --- |
+| `GET /api/matches/{id}/live` | Signed in | The state, with `retiredSide`, `void`, `ratingSystem` (the one players see) and `ratingChanges` in every system |
+| `GET /api/matches/{id}/live/stream` | Signed in | The same, as server-sent events until it's over |
+| `POST /api/judge/matches/{id}/start` | Its judge | `{firstServer}` |
+| `POST /api/judge/matches/{id}/points` | Its judge | `{seq, kind, side, clientId}` |
+| `POST /api/judge/matches/{id}/finish` | Its judge | Records a decided match and rates it |
+| `POST /api/judge/matches/{id}/retire` | Its judge | `{retiredSide}` |
+| `POST /api/judge/matches/{id}/walkover` | Its judge | `{winnerSide}` |
+| `POST /api/admin/matches/{id}/walkover` | Admin | `{winnerSide}`, any match |
+| `POST /api/admin/matches/{id}/void` | Admin | `{reason}` |
+| `GET /api/players/{id}/ratings` | Signed in | Every system's current rating (with RD, and RD grown since) and recent history, newest first |
 
 ---
 
-## 9. Ratings (Decided: Elo, in the 1200–2000 range)
+## 9. Ratings (Decided: Glicko shown to players, Elo run alongside)
 
-**One rating per discipline** (Proposed): singles, doubles and mixed are
-rated separately (as BWF ranks disciplines separately). Each rating stores:
+**Built** (build step 9, migration `000015`): matches are rated when they
+end, in every rating system; every change is kept; a void restores or
+replays. Reference: Glickman, [The Glicko Rating
+System](https://www.glicko.net/glicko/glicko.pdf).
 
-- the rating itself;
-- matches played;
-- whether it's still provisional.
+**Two systems, one shown** (Decided):
 
-**Starting rating** (Decided): **every new account starts at 1200** in
-each discipline. No self-assessment at signup. The higher K-factor while a
-rating is provisional (below) lets strong newcomers climb quickly.
+- **Glicko-1** (`glicko-1`) is what players see. Original Glicko, not
+  Glicko-2: Glicko-2 assumes ratings are updated in batches of 10–15 games
+  per period, and this app rates after every match.
+- **Elo** (`elo-1`) rates every match too, alongside. Both systems' states,
+  history and pre-match predictions are published in the API (section 8),
+  so the two can be compared on the same matches. Which one players see
+  is the `RATING_SYSTEM` setting (`glicko-1` by default); switching it
+  changes nothing stored.
+- Each system keeps its own exact state per player and discipline in
+  `rating_states`. `player_ratings` holds the rating players see: the
+  default system's, rounded, so the matcher, challenges and suggestions
+  read it as before.
 
-**The Elo update**, for side A against side B:
+**The rating systems are pluggable.** They live in `backend/internal/rating`
+behind one interface:
+
+```go
+type System interface {
+    Name() string                             // on every history row
+    Initial() Player                          // a new player's state
+    Carry(rating float64, matches int) Player // a rating from before this system
+    Rate(m Match) []Change                    // every player's before and after
+    WinProbability(m Match) float64           // side A's chance, before the match
+    Provisional(p Player) bool
+}
+```
+
+A `Player` is a rating, an RD (0 for Elo), matches played and when last
+rated. Every side's expectation comes from the states before the match,
+never from one already updated.
+
+**One rating per discipline** (Decided): every player has a singles, a
+doubles and a mixed rating, kept separately (as BWF ranks disciplines
+separately). A doubles rating is the player's own, whoever they partner.
+
+**Starting point** (Decided):
+
+- **Every new account starts at 1200**, with Glicko RD 350. No
+  self-assessment at signup.
+- **A player's first doubles or mixed rating comes from their singles
+  rating** (Decided): the same number, and in Glicko the singles RD (grown
+  for the time since they last played) plus 150 in quadrature, because
+  singles form says a lot about doubles but not everything:
+  `RD = min(√(RD_singles² + 150²), 350)`. A settled singles player starts
+  doubles at about RD 160–175, so provisional, and finds their level in a
+  few matches; someone with no singles rating starts at 1200 / 350. In Elo
+  they start at the singles rating with the provisional K.
+- Until they've played doubles or mixed, the rating shown there is their
+  singles one, provisional, so the matcher and events' rating bands judge
+  them by the number they'll start from rather than 1200.
+- A rating seeded before a system first rates someone carries over, with
+  RD 350 / √(1 + matches played).
+
+**Glicko** (Decided; settings in `rating.DefaultGlicko`):
 
 ```
-expected_A = 1 / (1 + 10 ^ ((rating_B - rating_A) / 400))
-result_A   = 1 if A won, else 0
-change_A   = round(K × (result_A - expected_A))
+RD*    = min(√(RD² + c² × days since last rated), 350)       c = 8
+g(RD)  = 1 / √(1 + 3q² RD² / π²)                              q = ln 10 / 400
+E      = 1 / (1 + 10^(−g(RD*_opp) × (r − r_opp) / 400))
+d²     = 1 / (q² g(RD*_opp)² E (1 − E))
+r'     = r + q / (1/RD*² + 1/d²) × g(RD*_opp) × (S − E) × margin
+RD'    = √(1 / (1/RD*² + 1/d²))
 ```
 
-- In doubles, a side's rating is the average of its two players, and each
-  player gets that side's change.
-- **K-factor:** 40 for a player's first 10 rated matches in that
-  discipline (while provisional), 20 after that (Proposed).
-- The margin of victory doesn't affect the change in version 1.
+- Rated after every match, so players see the change at once; inactivity
+  is measured in days since that player was last rated.
+- With c = 8, a settled RD of 60 is back to 350 after about five years
+  away. A weekly player settles near RD 87, and an even win moves them
+  about ±21; a monthly player settles near 123, about ±42.
+- A new player's first win against a settled 1200 is about +175, and costs
+  the settled player about 12: Glicko isn't zero-sum. Uncertain ratings
+  move fast; beating an unknown counts for little.
+- The core is the paper's equations, tested against its worked example
+  (1500 / 200 → 1464 / 151.4).
+
+**Doubles** (Decided): in a match, a pair is rated as one player, as in
+singles, weighted towards its stronger (higher-rated) partner:
+
+```
+pair rating = 0.6 × rating_stronger + 0.4 × rating_weaker
+pair RD     = 0.6 × RD_stronger     + 0.4 × RD_weaker      (RDs grown for inactivity)
+```
+
+Level partners count half each. The pair's RD stays on a player's scale, so
+a pair's rating moves about as much as one player's would. The paper's
+update is worked out once for the pair; both partners get the pair's
+change, and each partner's RD shrinks by the pair's factor, so the pair's
+RD afterwards is exactly the update's. Elo weights the pair's rating and K
+the same way. For example, two players new to doubles who are 1800 and
+1300 in singles play their first match as a 1600 pair, and rise or fall
+together from there. The 60/40 split is a setting (`StrongerWeight`). This
+is the app's own extension, to be checked against results like everything
+else. The matcher still forms teams by the plain average.
+
+**The result `S`** (Decided):
+
+| How it ended | S for side A | Rated? |
+| --- | --- | --- |
+| Played out (`completed`) | 1 if A won, else 0 | Yes |
+| A side retired (`retired`) | A's share of all points played, e.g. 6–2 is 0.75 | Yes; not if no point was played |
+| Walkover (`walkover`) | — | No |
+| Cancelled or voided | — | No; a void undoes any change |
+
+A retirement is rated on the score so far, so the side ahead on points
+gains even if it's the side that retired. A share of points is a valid
+Glicko score, like a draw's 0.5.
+
+**Margin of victory** (Decided: on, at most ±10%). The win/loss stays the
+result (S above); how one-sided it was only scales the size of the change,
+never its direction, so a win can never lower a rating:
+
+```
+dominance = 0.4 × (games won − games lost) / 2
+          + 0.6 × mean over games of |points A − points B| / (points A + points B)
+margin    = clamp(1 + 0.2 × (dominance − 0.5), 0.9, 1.1)
+```
+
+A 2–1 win comes out about 0.95, a typical 2–0 about 1, a rout about 1.02,
+and only 21–0, 21–0 reaches 1.1. It applies to both sides alike (a heavy
+loss costs more), to both systems, and never to a retirement, whose share
+of points already reflects the score. Glicko's RD is never scaled. Each
+history row keeps the change before the margin (`unadjusted`) for judging
+it.
+
+**Elo** (`elo-1`), for comparison:
+
+```
+expected_A = 1 / (1 + 10 ^ ((rating_B − rating_A) / 400))
+change     = round(K × (S − expected_A) × margin)
+```
+
+K is 40 for a player's first 10 rated matches in a discipline, 20 after; a
+pair's K is its players' average.
+
+**Provisional** (Decided): Glicko — while RD is 130 or more after the
+player's last match (most players settle below it within 6 to 16 nights,
+monthly ones included); Elo — the first 10 matches. `player_ratings.provisional`
+is the default system's.
 
 **When ratings change:**
 
-- In the **same transaction** that marks the match `completed`.
-- A `rating_changes` row is written per player: match, discipline, before,
-  after, change.
-- Each match can change ratings **only once**. A unique key on
-  (match, player, discipline) prevents a second update.
+- In the **same transaction** that ends the match (`FinishMatch`,
+  `RetireMatch`), in every system. Rating writes in a discipline take one
+  advisory lock, so they happen one at a time, and the history's order is
+  the order matches were rated in.
+- A `rating_changes` row is written per player and system: the exact
+  state before and after (rating, RD, matches, last rated), kind, and the
+  working in `details` (`expected`, `winProbability`, `score`, `k` or `g`
+  and `dSquared`, `dominance`, `margin`, `unadjusted`).
+- Each match is rated once per system: a unique key on (match, player,
+  system, kind), and the code checks first.
 
-**Walkovers and cancelled matches** don't change ratings (Proposed).
+**Corrections** (Decided, built): an admin can **void** a match (section
+8). Each system's history from that match on is replayed without it:
 
-**Corrections:**
+- Every player starts from their exact state just before the match; the
+  matches rated since are rated again in their original order and at
+  their original times, leaving out anything voided.
+- Nobody has played since in the common case (a void the same night), so
+  the match's players simply get their exact earlier state back.
+- A replay stays within one discipline: voiding a singles match doesn't
+  re-derive a doubles rating that started from it.
+- When someone has, the replay reaches beyond the match's players: their
+  later opponents' ratings came out differently, and so on. Each player in
+  the voided match gets a `void` row; anyone else whose rating moves gets
+  an `adjust` row, credited to the void. Original rows are never edited.
 
-- An admin can **void** a match.
-- That adds reversing `rating_changes` rows; existing rows are never
-  edited.
-- If later matches depend on the voided one, replay that player's later
-  matches in order. Recording before and after values makes this possible.
+**Comparing the systems.** Every match stores each system's prediction
+before it was played (`winProbability`, which unlike Glicko's update `E`
+counts both sides' uncertainty). After a few hundred matches, compare how
+well each predicted the winner and how well calibrated its probabilities
+were, overall and for new, infrequent and doubles players. Leave out
+walkovers, and report retirements separately.
 
-**Leaderboard:**
+**Leaderboard** (not built):
 
 - One per discipline, filterable by city.
-- Only players with at least 5 rated matches appear on it (Proposed).
+- Proposed: only established players appear (RD below 130 as of today, so
+  someone who stops playing drops off after a few months).
 
 ---
 
@@ -1025,7 +1246,7 @@ Every scheduled match is rated (Decided), so these are too.
 | 7 | Separate ratings per discipline? | Yes |
 | 8 | Gender field for mixed doubles: wording and options | Asked only when choosing mixed |
 | 9 | Who are the judges: staff, volunteers, or other players between their matches? | Assigned by admins from the event's judge list |
-| 10 | Does a walkover change ratings? | No |
+| 10 | ~~Does a walkover change ratings?~~ | Decided: no (section 9) |
 | 11 | Payment provider | Razorpay |
 | 12 | Notification channels after in-app | WhatsApp, then SMS |
 | 13 | ~~A challenge where only one player pays~~ | Decided: refunded automatically when the deadline passes |
@@ -1035,7 +1256,11 @@ Every scheduled match is rated (Decided), so these are too.
 | 17 | Most entries one player can hold in one event | 3 |
 | 18 | ~~When a full event's schedule is made, does it publish at once or wait for an admin?~~ | Decided: every run publishes at once; admins can edit fixtures afterwards (section 6) |
 | 19 | ~~When an event hasn't filled, when is the schedule made?~~ | Decided: rolling runs, matched at 24 h before with complete matches only, then every 4 h (section 6) |
-| 20 | Categories: men's singles, women's singles, men's doubles, women's doubles and mixed doubles? That needs a gender on the profile, a maximum per category, and one category per entry | Open |
-| 21 | Does the admin publish about 4 days before by hand, or does the event open on its own at a set time? | Admin publishes; the form suggests 4 days before |
-| 22 | When does joining finally close: at the start (on-the-spot entries are walk-ins), or some time before? | At the start |
-| 23 | "Good enough" opponents: within 200 rating points? At the last run, pair the closest even if further apart (flagged), or leave them unmatched and refund? | Within 200; the last run pairs the closest and flags it |
+| 20 | ~~Which categories does an event offer?~~ | Decided: the admin picks them per event, gendered or open, each with a maximum. Gendered ones need a gender on the profile; one category per entry |
+| 21 | ~~Does the admin publish by hand, or does the event open on its own?~~ | Decided: the admin publishes, about 4 days before |
+| 22 | ~~When does joining finally close?~~ | Decided: at the start; after that, on the spot through the admin |
+| 23 | ~~"Good enough" opponents in the last 24 hours~~ | Decided: matched as they come in, closest rating first, no limit; big gaps flagged and the admin can redo the fixture |
+| 24 | ~~A player injured mid-match~~ | Decided: they retire, the other side wins, and the match is rated on each side's share of the points played; not rated if none were (section 9) |
+| 25 | ~~Should the margin of victory change ratings?~~ | Decided: yes, as a multiplier of at most ±10% on the size of the change, never its direction (section 9) |
+| 27 | ~~Elo or Glicko?~~ | Decided: Glicko shown to players, Elo rated alongside and published for comparison (section 9) |
+| 26 | Who can void a match or record a walkover as an admin? | Admins once roles exist; for now anyone signed in, like every admin route |

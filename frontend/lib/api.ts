@@ -295,7 +295,7 @@ export async function searchUsers(q: string, signal?: AbortSignal): Promise<Publ
 /** How a match was made: the matcher, an admin by hand, a challenge, on arrival, or at the desk. */
 export type MatchSource = "matcher" | "admin" | "challenge" | "arrival" | "desk";
 
-export type MatchStatus = "scheduled" | "ready" | "live" | "completed" | "walkover" | "cancelled";
+export type MatchStatus = "scheduled" | "ready" | "live" | "completed" | "retired" | "walkover" | "cancelled" | "void";
 
 export type MatchPlayer = { userId: string; name: string; username: string; rating: number };
 export type MatchSide = { side: "A" | "B"; players: MatchPlayer[]; rating: number };
@@ -843,6 +843,229 @@ export type PlayerStats = { ratings: Record<EventFormat, number>; played: number
 
 export function myStats(): Promise<PlayerStats> {
   return request<PlayerStats>("/api/me/stats");
+}
+
+// --- Live scoring -----------------------------------------------------------
+// The judge starts the match and scores it rally by rally; players watch it
+// live. The score is computed by the server from its point log, so a client
+// only ever displays what it's sent (design doc, section 8).
+
+export type Side = "A" | "B";
+
+/** One game; winner is missing while it's being played. */
+export type GameScore = { a: number; b: number; winner?: Side };
+
+/** A point that counts, with the score it made. */
+export type Rally = { seq: number; side: Side; game: number; a: number; b: number; at: string };
+
+export type LiveScore = {
+  /** Finished games, then the one in play. */
+  games: GameScore[];
+  gamesA: number;
+  gamesB: number;
+  /** Serving the next rally; "" before the start. */
+  server: Side | "";
+  /** Set once decided, before the judge finishes the match. */
+  winner?: Side;
+  /** Newest first. */
+  rallies: Rally[];
+};
+
+export type LiveMatch = {
+  id: string;
+  status: MatchStatus;
+  format: EventFormat;
+  event: { id: string; title: string } | null;
+  venue: Venue;
+  court: Court;
+  startsAt: string;
+  endsAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  judge: Judge | null;
+  sides: MatchSide[];
+  firstServer: Side | "";
+  winnerSide: Side | null;
+  score: LiveScore;
+  /** The number the judge's next point or undo must carry. */
+  nextSeq: number;
+  /** The earliest the judge may start it. */
+  canStartFrom: string;
+  /** The side that retired (injury); null unless it did. */
+  retiredSide: Side | null;
+  /** Set once an admin voids the match. */
+  void: { at: string; reason: string; from: MatchStatus } | null;
+  /** The rating system players see, e.g. "glicko-1". */
+  ratingSystem: string;
+  /**
+   * Every system's changes, oldest first: one per player and system if the
+   * match was rated, then one each if it was voided. Show ratingSystem's.
+   */
+  ratingChanges: RatingChange[];
+};
+
+export type RatingChange = {
+  userId: string;
+  /** Which system made it: "glicko-1" or "elo-1". */
+  system: string;
+  kind: "match" | "void";
+  before: number;
+  after: number;
+  change: number;
+  /** Glicko's uncertainty; null for Elo. */
+  rdBefore: number | null;
+  rdAfter: number | null;
+  /** The system's prediction, before the match, that this player's side would win; null on a void. */
+  winProbability: number | null;
+};
+
+/** A match that has ended one way or another: nothing more will happen. */
+export const matchOver = (status: MatchStatus) =>
+  status === "completed" ||
+  status === "retired" ||
+  status === "walkover" ||
+  status === "cancelled" ||
+  status === "void";
+
+/** The player's net change from a match in the rating they see: 0 once voided, unless later matches were replayed. */
+export function ratingChangeFor(m: LiveMatch, userId: string): RatingChange | null {
+  const mine = m.ratingChanges.filter((c) => c.userId === userId && c.system === m.ratingSystem);
+  if (mine.length === 0) return null;
+  const rated = mine.find((c) => c.kind === "match")!;
+  const last = mine[mine.length - 1];
+  return { ...rated, after: last.after, change: mine.reduce((sum, c) => sum + c.change, 0) };
+}
+
+export async function liveMatch(id: string): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/matches/${encodeURIComponent(id)}/live`);
+  return match;
+}
+
+/**
+ * Follows a match as it's scored, over server-sent events. Calls onChange
+ * with every state, starting with the current one, and stops once the match
+ * is over. EventSource reconnects by itself after a dropped connection.
+ * Returns a function that stops watching.
+ */
+export function watchMatch(id: string, onChange: (m: LiveMatch) => void, onError?: () => void): () => void {
+  const source = new EventSource(`/api/matches/${encodeURIComponent(id)}/live/stream`);
+  source.addEventListener("match", (e) => {
+    const m = JSON.parse((e as MessageEvent<string>).data) as LiveMatch;
+    onChange(m);
+    // The server ends the stream after a final state; without this the
+    // browser would reconnect to it every few seconds.
+    if (matchOver(m.status)) source.close();
+  });
+  source.onerror = () => onError?.();
+  return () => source.close();
+}
+
+/** Judge only: starts a scheduled match, with who serves first. */
+export async function judgeStartMatch(id: string, firstServer: Side): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/judge/matches/${encodeURIComponent(id)}/start`, {
+    method: "POST",
+    body: JSON.stringify({ firstServer }),
+  });
+  return match;
+}
+
+export type PointSend = { seq: number; kind: "point"; side: Side; clientId: string } | { seq: number; kind: "undo"; clientId: string };
+
+/**
+ * Judge only: records a point or an undo. A clientId the server has seen is
+ * a resend and changes nothing. 409 when seq is out of turn: reload the
+ * match for its nextSeq and resend.
+ */
+export async function judgeSendPoint(id: string, point: PointSend): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/judge/matches/${encodeURIComponent(id)}/points`, {
+    method: "POST",
+    body: JSON.stringify(point),
+  });
+  return match;
+}
+
+/** Judge only: records the result of a decided match. */
+export async function judgeFinishMatch(id: string): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/judge/matches/${encodeURIComponent(id)}/finish`, {
+    method: "POST",
+  });
+  return match;
+}
+
+/**
+ * Judge only: ends a live match because a side can't go on (injury). The
+ * other side wins; it's rated on the points played so far.
+ */
+export async function judgeRetireMatch(id: string, retiredSide: Side): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/judge/matches/${encodeURIComponent(id)}/retire`, {
+    method: "POST",
+    body: JSON.stringify({ retiredSide }),
+  });
+  return match;
+}
+
+/** Judge only: gives a match that hasn't started to the side that turned up. Not rated. */
+export async function judgeWalkover(id: string, winnerSide: Side): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/judge/matches/${encodeURIComponent(id)}/walkover`, {
+    method: "POST",
+    body: JSON.stringify({ winnerSide }),
+  });
+  return match;
+}
+
+/** Admin: records a walkover on any match that hasn't started. */
+export async function adminWalkover(id: string, winnerSide: Side): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/admin/matches/${encodeURIComponent(id)}/walkover`, {
+    method: "POST",
+    body: JSON.stringify({ winnerSide }),
+  });
+  return match;
+}
+
+/**
+ * Admin: strikes off a match that started or ended, with a reason (up to
+ * 200 characters). Its rating changes are reversed.
+ */
+export async function adminVoidMatch(id: string, reason: string): Promise<LiveMatch> {
+  const { match } = await request<{ match: LiveMatch }>(`/api/admin/matches/${encodeURIComponent(id)}/void`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return match;
+}
+
+export type PlayerRating = {
+  system: string;
+  discipline: EventFormat;
+  rating: number;
+  matchesPlayed: number;
+  provisional: boolean;
+  /** Glicko's uncertainty after their last match, and grown since; null for Elo. */
+  rd: number | null;
+  rdNow: number | null;
+  lastRatedAt: string | null;
+};
+
+export type RatingHistoryEntry = {
+  matchId: string;
+  system: string;
+  discipline: EventFormat;
+  /** "adjust": a void replayed later matches and moved this player's rating. */
+  kind: "match" | "void" | "adjust";
+  before: number;
+  after: number;
+  change: number;
+  rdBefore: number | null;
+  rdAfter: number | null;
+  winProbability: number | null;
+  at: string;
+};
+
+/** What every rating system says about a player: current ratings and recent history, newest first. */
+export async function playerRatings(
+  userId: string,
+): Promise<{ userId: string; default: string; ratings: PlayerRating[]; history: RatingHistoryEntry[] }> {
+  return request(`/api/players/${encodeURIComponent(userId)}/ratings`);
 }
 
 /**

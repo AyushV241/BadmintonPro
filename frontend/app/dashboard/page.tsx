@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Avatar, avatarColors } from "@/components/app/Avatar";
 import { BottomNav } from "@/components/app/BottomNav";
 import { EventRow, NextEventCard, joinable, myStatusIn } from "@/components/events/EventBits";
+import { FixtureSlide, HeroCarousel, LiveSlide, type Slide } from "@/components/home/HeroCarousel";
 import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
 import { useAdminMode } from "@/lib/adminMode";
 import { meSession, myEntries, myMatches, nearbyPlayers, type Entry, type MyMatch, type Player, type User } from "@/lib/api";
@@ -91,7 +92,7 @@ function ChallengeNearby({ fallbackLat, fallbackLng }: { fallbackLat: number | n
   );
 }
 
-function NearbyEvents() {
+function NearbyEvents({ meId }: { meId: string }) {
   const nearby = useNearbyEvents();
   // What the player has already joined, so cards say "You're in" instead of Join.
   const [mine, setMine] = useState<{ entries: Entry[]; matches: MyMatch[] }>({ entries: [], matches: [] });
@@ -122,6 +123,24 @@ function NearbyEvents() {
   // The photo card offers Join, so it goes to the first event still open.
   const next = nearby.events.find((e) => joinable(e));
   const more = nearby.events.filter((e) => e !== next);
+
+  // The top carousel: a match being played now, then the next one coming up,
+  // then the event card. Matches come soonest first.
+  const slides: Slide[] = [];
+  for (const m of mine.matches.filter((m) => m.status === "live")) {
+    slides.push({ key: `live-${m.id}`, label: "your live match", node: <LiveSlide match={m} meId={meId} /> });
+  }
+  const upcoming = mine.matches.find((m) => m.status === "scheduled" || m.status === "ready");
+  if (upcoming) {
+    slides.push({ key: `next-${upcoming.id}`, label: "your next match", node: <FixtureSlide match={upcoming} meId={meId} /> });
+  }
+  if (next) {
+    slides.push({ key: `event-${next.id}`, label: next.title, node: <NextEventCard event={next} mine={statusOf(next.id)} /> });
+  }
+
+  if (!next && slides.length > 0) {
+    return <HeroCarousel slides={slides} />;
+  }
   if (!next) {
     return (
       <div className="flex flex-col gap-1 rounded-[20px] border border-line bg-surface p-5">
@@ -132,7 +151,7 @@ function NearbyEvents() {
   }
   return (
     <>
-      <NextEventCard event={next} mine={statusOf(next.id)} />
+      <HeroCarousel slides={slides} />
       <RatingStrip />
       <ChallengeNearby fallbackLat={next.venue.lat} fallbackLng={next.venue.lng} />
       {more.length > 0 && (
@@ -236,7 +255,7 @@ export default function HomePage() {
               <ArrowRightIcon className="size-5 text-muted" />
             </Link>
           )}
-          <NearbyEvents />
+          <NearbyEvents meId={user.id} />
         </div>
       </div>
 

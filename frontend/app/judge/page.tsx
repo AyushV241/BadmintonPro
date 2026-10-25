@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Avatar, avatarColors } from "@/components/app/Avatar";
@@ -35,8 +36,10 @@ const statusLabels: Record<MatchStatus, string> = {
   ready: "Ready",
   live: "Live",
   completed: "Finished",
+  retired: "Retired",
   walkover: "Walkover",
   cancelled: "Cancelled",
+  void: "Void",
 };
 
 function sideNames(side: MatchSide | undefined) {
@@ -71,7 +74,7 @@ function NextMatch({ match }: { match: JudgeMatch }) {
   return (
     <section
       aria-label="Next match to judge"
-      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] dark:border dark:border-[#30342a] dark:bg-[#1c1f18]"
+      className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] border border-transparent dark:border-[#30342a] dark:bg-[#1c1f18]"
     >
       <div className="flex items-center justify-between">
         <span className="rounded-full bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-lime">
@@ -101,6 +104,12 @@ function NextMatch({ match }: { match: JudgeMatch }) {
       <p className="text-[13px] text-[#a3a596]">
         {match.event?.title ?? match.venue.name} · {match.venue.name}
       </p>
+      <Link
+        href={`/judge/matches/${encodeURIComponent(match.id)}`}
+        className="flex min-h-[52px] items-center justify-center rounded-2xl bg-lime text-base font-semibold text-ink"
+      >
+        {match.status === "live" ? "Continue scoring" : "Start match"}
+      </Link>
     </section>
   );
 }
@@ -110,7 +119,10 @@ function MatchRow({ match }: { match: JudgeMatch }) {
   const [a, b] = sides(match);
   const upcoming = match.status === "scheduled" || match.status === "ready";
   return (
-    <div className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3">
+    <Link
+      href={`/judge/matches/${encodeURIComponent(match.id)}`}
+      className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3"
+    >
       <DateTile iso={match.startsAt} timeZone={tz} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-[15px] font-semibold">
@@ -123,7 +135,7 @@ function MatchRow({ match }: { match: JudgeMatch }) {
       <span className="shrink-0 text-[13px] font-semibold">
         {upcoming ? clockTime(match.startsAt, tz) : statusLabels[match.status]}
       </span>
-    </div>
+    </Link>
   );
 }
 

@@ -23,6 +23,9 @@ func isUniqueViolation(err error) bool {
 // PostgresStore is the durable implementation of Store.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// ratings are the rating systems in use; Glicko is the one players see
+	// unless UseRatingSystem says otherwise.
+	ratings ratingConfig
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
@@ -34,7 +37,18 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, 
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	return &PostgresStore{pool: pool}, nil
+	return &PostgresStore{pool: pool, ratings: mustRatingConfig("")}, nil
+}
+
+// UseRatingSystem makes name ("glicko-1" or "elo-1") the rating players see.
+// Every system still rates every match.
+func (s *PostgresStore) UseRatingSystem(name string) error {
+	c, err := newRatingConfig(name)
+	if err != nil {
+		return err
+	}
+	s.ratings = c
+	return nil
 }
 
 func (s *PostgresStore) Close() { s.pool.Close() }

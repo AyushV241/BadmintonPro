@@ -71,13 +71,20 @@ function NextMatch({ match, meId }: { match: MyMatch; meId: string }) {
     <>
       <section
         aria-label="Next match"
-        className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] dark:border dark:border-[#30342a] dark:bg-[#1c1f18]"
+        className="flex flex-col gap-4 rounded-3xl bg-ink bg-[image:radial-gradient(120%_80%_at_100%_0%,rgba(226,251,108,0.12)_0%,rgba(226,251,108,0)_55%)] p-[18px] text-[#f5f5f0] border border-transparent dark:border-[#30342a] dark:bg-[#1c1f18]"
       >
         <div className="flex items-center justify-between">
-          <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-lime">
-            <CheckIcon className="size-3" strokeWidth={3} />
-            MATCH SCHEDULED
-          </span>
+          {match.status === "live" ? (
+            <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-[#f5f5f0]">
+              <span aria-hidden="true" className="size-[7px] rounded-full bg-[#ff5a4e] shadow-[0_0_0_3px_rgba(255,90,78,0.25)]" />
+              LIVE NOW
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-lime">
+              <CheckIcon className="size-3" strokeWidth={3} />
+              MATCH SCHEDULED
+            </span>
+          )}
           <span className="text-[11px] font-semibold tracking-[0.12em] text-[#a3a596] uppercase">
             {weekday} {day} {month}
           </span>
@@ -99,6 +106,14 @@ function NextMatch({ match, meId }: { match: MyMatch; meId: string }) {
             </div>
           ))}
         </div>
+        <Link
+          href={`/matches/${encodeURIComponent(match.id)}/live`}
+          className={`flex min-h-11 items-center justify-center rounded-2xl text-sm font-semibold ${
+            match.status === "live" ? "bg-lime text-ink" : "bg-white/10 text-[#f5f5f0]"
+          }`}
+        >
+          {match.status === "live" ? "Watch live" : "Open match"}
+        </Link>
       </section>
 
       <div className="flex items-center gap-3 rounded-[20px] border border-line bg-surface px-3.5 py-3">
@@ -122,22 +137,36 @@ function NextMatch({ match, meId }: { match: MyMatch; meId: string }) {
   );
 }
 
+/** How a match that's over went for the player; null while it's still to come. */
+function matchResult(match: MyMatch): string | null {
+  const won = match.winnerSide === match.mySide;
+  switch (match.status) {
+    case "completed":
+      return won ? "Won" : "Lost";
+    case "retired":
+      // The side that retired loses.
+      return won ? "Won" : "Retired";
+    case "walkover":
+      return won ? "Won · walkover" : "No-show";
+    case "cancelled":
+      return "Cancelled";
+    case "void":
+      return "Void";
+    default:
+      return null;
+  }
+}
+
 function MatchRow({ match, meId }: { match: MyMatch; meId: string }) {
   const tz = match.venue.timezone;
   const mine = match.sides.find((s) => s.side === match.mySide)!;
   const theirs = match.sides.find((s) => s.side !== match.mySide)!;
-  const result =
-    match.status === "completed" && match.winnerSide
-      ? match.winnerSide === match.mySide
-        ? "Won"
-        : "Lost"
-      : match.status === "walkover"
-        ? "Walkover"
-        : match.status === "cancelled"
-          ? "Cancelled"
-          : clockTime(match.startsAt, tz);
+  const result = matchResult(match) ?? clockTime(match.startsAt, tz);
   return (
-    <div className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3">
+    <Link
+      href={`/matches/${encodeURIComponent(match.id)}/live`}
+      className="flex items-center gap-3 rounded-[20px] border border-line bg-surface p-3"
+    >
       <DateTile iso={match.startsAt} timeZone={tz} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-[15px] font-semibold">
@@ -148,7 +177,7 @@ function MatchRow({ match, meId }: { match: MyMatch; meId: string }) {
         </span>
       </span>
       <span className="shrink-0 text-[13px] font-semibold">{result}</span>
-    </div>
+    </Link>
   );
 }
 

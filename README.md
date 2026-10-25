@@ -307,6 +307,11 @@ mode**; it will check roles later (see the design doc, section 10).
 | `GET` | `/api/me` | cookie | `{"user","mode","isJudge"}`. `user`: the signed-in user, including `username`, contact `email`/`phone` with `emailVerified`/`phoneVerified`, `signInMethod` and `profileComplete`. `mode`: `"player"` or `"judge"`, the home page this session lands on. `isJudge`: whether the account is a registered judge right now |
 | `POST` | `/api/me/mode` | cookie | `{"mode":"player"\|"judge"}`: switches the home page without signing in again; returns the same as `GET /api/me`. `"judge"` needs a registered judge (`403` otherwise) |
 | `GET` | `/api/judge/home` | judge | `{"judge","events","matches"}`: the registered judge (`userId`, `name`, `phone`, `username`, `createdAt`), the events they're listed for that haven't ended or been cancelled, and the matches assigned to them that aren't cancelled (including today's finished ones), soonest first, in the shape of `/api/me/matches` without `mySide`. `403` for anyone who isn't a registered judge, checked on every request |
+| `POST` | `/api/judge/matches/{id}/start` | judge | `{"firstServer":"A"\|"B"}` (the toss): a `scheduled` or `ready` match becomes `live`, from 60 minutes before its slot. `200 {"match"}`. `403` not this match's judge, `409` not startable, or too early with `canStartFrom` |
+| `POST` | `/api/judge/matches/{id}/points` | judge | `{"seq","kind":"point"\|"undo","side"?,"clientId"}`: appends to the point log; the score is replayed from it. A `clientId` already logged is a resend and changes nothing. `409` out of turn (with the `nextSeq` to resend from), match not live, already decided, nothing to undo |
+| `POST` | `/api/judge/matches/{id}/finish` | judge | Records a decided match (`completed`) and rates it in every system. `409` not live or not decided |
+| `POST` | `/api/judge/matches/{id}/retire` | judge | `{"retiredSide"}`: a side can't go on (injury). The other side wins (`retired`); it's rated on each side's share of the points played, or not at all if none were. `409` not live, or decided (finish it) |
+| `POST` | `/api/judge/matches/{id}/walkover` | judge | `{"winnerSide"}`: the other side never turned up. `walkover`, not rated; the absent side's entries become `no_show`. Same time window as starting. `409` already started |
 | `PUT` | `/api/me/profile` | cookie | `{"name","username","email"?}`: the profile step. `email` only for accounts without a verified one (stored unverified; `""` clears it). `409` if the username is taken |
 | `POST` | `/api/me/phone/start` | cookie | `{"phone"}`: texts a code to a phone a Google account wants on its profile. Same validation as phone sign-in. `400` for phone accounts |
 | `POST` | `/api/me/phone/verify` | cookie | `{"phone","code"}`: saves it as a **verified contact phone**. It does not become a way to sign in |
@@ -330,7 +335,11 @@ mode**; it will check roles later (see the design doc, section 10).
 | `POST` | `/api/challenges/{id}/withdraw` | cookie | Pulls out before the match is fixed: the challenger while `pending` or `accepted`, the opponent once `accepted`. `200 {"challenge"}` as `withdrawn`; unpaid entries are cancelled and paid ones refunded. `409` otherwise (scheduled, already over, or the opponent before accepting: decline instead) |
 | `GET` | `/api/me/recent-players` | cookie | `{"players":[{"id","username","name","rating"}]}`: up to 10 people you've shared a match with or challenged (either way), most recent first (a match by its start, a challenge by when it was sent). Complete profiles only |
 | `GET` | `/api/players/nearby?lat=&lng=&radiusKm=` | cookie | `{"players":[…]}` as above: up to 10 other players with an entry that isn't cancelled from the last 60 days at a venue within the radius (default 10 km, at most 100; `lat` and `lng` required, `400` otherwise), closest singles rating to yours first, then the most recent entry. For Home's "Challenge people near you" |
-| `GET` | `/api/users/search?q=` | cookie | `{"users":[{"id","username","name"}]}`, at most 20: exact, prefix, then contains matches, plus fuzzy ones when fewer than 5 and `q` has 3+ characters. `q` ignores case and a leading `@`; empty gives `[]`. Leaves out you and incomplete profiles, never shows phone or email. 30 searches a minute per user, then `429` with `Retry-After` |
+| `GET` | `/api/users/search?q=` | cookie | `{"users":[{"id","username","name"}]}`, at most 20, matching the username or the name (any word of it), closest first: exact, prefix, then contains matches, plus fuzzy ones when fewer than 5 and `q` has 3+ characters. `q` ignores case and a leading `@`; empty gives `[]`. Leaves out you and incomplete profiles, never shows phone or email. 30 searches a minute per user, then `429` with `Retry-After` |
+| `GET` | `/api/players/suggested` | cookie | `{"players":[…]}`: players at your level, closest singles rating first, so picking an opponent doesn't start from an empty list. Leaves out you and incomplete profiles |
+| `GET` | `/api/players/{id}/ratings` | cookie | What every rating system says about a player: `{"userId","default","ratings":[{"system","discipline","rating","matchesPlayed","provisional","rd","rdNow","lastRatedAt"}],"history":[{"matchId","system","discipline","kind","before","after","change","rdBefore","rdAfter","winProbability","at"}]}`. `default` is the system players see (`glicko-1`); Elo (`elo-1`) runs alongside for comparison. `rd` is Glicko's uncertainty after the last match, `rdNow` grown since, both `null` for Elo. History is newest first, at most 100; `kind` is `match`, `void`, or `adjust` (a void replayed later matches and moved this player). `404` unknown player |
+| `GET` | `/api/matches/{id}/live` | cookie | `{"match"}`: the live state. `status` (`retired` and `void` too), sides, `firstServer`, `score` (`games`, `gamesA`, `gamesB`, `server`, `winner` once decided, `rallies` newest first), `nextSeq`, `canStartFrom`, `winnerSide`, `retiredSide`, `void` (`{"at","reason","from"}` or `null`), `ratingSystem` and `ratingChanges` (every system's, with `system`, `kind`, `before`, `after`, `change`, `rdBefore`, `rdAfter`, `winProbability`). `404` unknown match |
+| `GET` | `/api/matches/{id}/live/stream` | cookie | The same state as server-sent events (`event: match`), sent on every change and ending after a final one; a comment every 15 s keeps it open through proxies |
 | `GET` | `/api/admin/venues` | admin | Every venue with its courts |
 | `POST` | `/api/admin/venues` | admin | `{"name","address","city","lat"?,"lng"?,"timezone"?,"courts"}`: creates a venue and `courts` courts named "Court 1" … "Court n". Time zone defaults to `Asia/Kolkata` |
 | `POST` | `/api/admin/venues/{id}/courts` | admin | `{"label"}`: adds a court. `409` if the venue already has that label |
@@ -356,6 +365,8 @@ mode**; it will check roles later (see the design doc, section 10).
 | `POST` | `/api/admin/matches/{id}/replace` | admin | `{"outEntryId","inEntryId","outcome":"no_show"\|"back_to_pool"}`: swaps an entry of a `scheduled` or `ready` match for a waiting paid entry of the event that allows its format, whose player isn't in the match and keeps the gap. The outgoing entry becomes `no_show` (no refund) or goes back to the pool (`confirmed`); a judge who comes in as a player is replaced. `200 {"match"}`. `400` bad body, entry not in the match or not waiting, player already in it; `404` unknown match or entry; `409` a challenge's match, not scheduled, the gap |
 | `POST` | `/api/admin/matches/{id}/move` | admin | `{"courtId","startsAt"}`: a new court and start for a `scheduled` or `ready` match (a challenge's too), checked like making one, ignoring the match itself. The judge stays if still free, else another or none. `200 {"match"}`. `400`, `404`, `409` as above |
 | `POST` | `/api/admin/matches/{id}/cancel` | admin | Cancels a `scheduled` or `ready` match: `200 {"match"}` with `status` `cancelled`; its open entries go back to the pool (`confirmed`). `404` unknown, `409` not scheduled or a challenge's (challenges end by withdrawing or refunding) |
+| `POST` | `/api/admin/matches/{id}/walkover` | admin | `{"winnerSide"}`: as the judge's, for any match that hasn't started |
+| `POST` | `/api/admin/matches/{id}/void` | admin | `{"reason"}` (up to 200 characters): strikes off a match that started or ended (`void`, keeping its result on record). Its rating changes are undone in every system: the players' earlier state is restored, or the discipline's later matches are replayed without it. A walkover's `no_show` entries go back to `scheduled`. `400` no reason, `409` not started or already void |
 | `GET` | `/api/admin/events/{id}/changes` | admin | `{"changes":[{"id","matchId","action","admin":{"id","username","name"},"details","createdAt"}]}`, newest first, at most 100: one per fixture edit, `action` `create`, `replace`, `move` or `cancel`, `details` the before and after (court, times and judge; entries in and out with the outcome; entries released). `404` unknown event |
 | `GET` | `/api/auth/{provider}/start` | — | Redirects to the provider's sign-in page |
 | `GET`, `POST` | `/api/auth/{provider}/callback` | — | Provider redirects back here; signs in, then redirects to `/setup-profile` on a first sign-in or `/dashboard` after |
@@ -465,6 +476,7 @@ ones, and variables already set in the shell win over both:
 | `TWILIO_VERIFY_SERVICE_SID` | The Verify Service that sends codes (`VA…`) | — |
 | `PHONE_REGIONS` | Comma-separated ISO country codes allowed to sign in by phone | `IN` |
 | `PHONE_DEFAULT_REGION` | Country assumed for numbers typed without a country code | first of `PHONE_REGIONS` |
+| `RATING_SYSTEM` | The rating players see: `glicko-1` or `elo-1`. Both rate every match either way (design doc, section 9) | `glicko-1` |
 | `PAYMENT_PROVIDER` | Enables payments: `fake` (made-up payments; local only) or `razorpay` (see *Payments*) | — (disabled) |
 | `RAZORPAY_KEY_ID` | Razorpay key ID, `rzp_test_…` or `rzp_live_…`; sent to the browser's checkout | — |
 | `RAZORPAY_KEY_SECRET` | Razorpay key secret: API calls and checkout signatures | — |
@@ -524,7 +536,10 @@ BadmintonPro/
 │   ├── fixtures*.go         # fixture editing by hand: make, suggest, replace, move, cancel; the audit
 │   ├── payments*.go         # pay, verify, webhook; the one confirmation path
 │   ├── challenges*.go       # challenges: send, accept, pay, the fixed slot, expiry; player suggestions
-│   ├── search*.go           # username search (pg_trgm)
+│   ├── search*.go           # player search by name or username (pg_trgm), suggestions
+│   ├── scoring*.go          # live scoring: start, points, finish, retire, walkover, void
+│   ├── live.go              # live updates: Postgres LISTEN/NOTIFY to server-sent events
+│   ├── ratings*.go          # rating every match in every system; void restore and replay
 │   ├── ratelimit.go         # in-memory sliding-window limiter
 │   ├── phone.go             # phone number normalisation to E.164
 │   ├── store.go             # Store interface, hashing, IDs
@@ -535,6 +550,7 @@ BadmintonPro/
 │   ├── internal/oauth/      # Provider interface, registry, Google adapter
 │   ├── internal/otp/        # OTP Provider interface; Twilio and in-memory adapters
 │   ├── internal/payments/   # payment Provider interface; Razorpay and fake adapters
+│   ├── internal/rating/     # rating System interface; Glicko and Elo, the margin multiplier
 │   └── *_test.go
 └── frontend/
     ├── app/
