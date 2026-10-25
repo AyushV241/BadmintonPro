@@ -32,6 +32,20 @@ const (
 	MatchCancelled = "cancelled"
 )
 
+// Match sources, as stored in matches.source: how the match was made.
+const (
+	// SourceMatcher is a schedule publish.
+	SourceMatcher = "matcher"
+	// SourceAdmin is an admin making it by hand (fixtures.go).
+	SourceAdmin = "admin"
+	// SourceChallenge is a challenge both players paid for.
+	SourceChallenge = "challenge"
+	// SourceArrival and SourceDesk are reserved for matching on arrival and
+	// at the desk on the spot (section 6); nothing sets them yet.
+	SourceArrival = "arrival"
+	SourceDesk    = "desk"
+)
+
 // MatchPlayer is one player on a side, with their current rating in the
 // match's format.
 type MatchPlayer struct {
@@ -55,11 +69,19 @@ type MatchSide struct {
 type ScheduleMatch struct {
 	// ID is null in a preview: nothing is saved until the schedule is
 	// published.
-	ID       *string   `json:"id"`
-	Format   string    `json:"format"`
-	Court    Court     `json:"court"`
-	StartsAt time.Time `json:"startsAt"`
-	EndsAt   time.Time `json:"endsAt"`
+	ID *string `json:"id"`
+	// Status is the match's: "scheduled" in a preview (what it would be).
+	Status string `json:"status"`
+	// Source is how it was made: "matcher", "admin", "challenge" ("arrival"
+	// and "desk" later). "matcher" in a preview.
+	Source string `json:"source"`
+	// ChallengeID is the challenge the match was fixed for, or null. Admins
+	// can move a challenge's match but not replace a player or cancel it.
+	ChallengeID *string   `json:"challengeId"`
+	Format      string    `json:"format"`
+	Court       Court     `json:"court"`
+	StartsAt    time.Time `json:"startsAt"`
+	EndsAt      time.Time `json:"endsAt"`
 	// Judge is null when no judge was free; Flags then has "no judge".
 	Judge *Judge      `json:"judge"`
 	Sides []MatchSide `json:"sides"`
@@ -118,6 +140,9 @@ type MatchEvent struct {
 type PlayerMatch struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
+	// Source is how it was made: "matcher", "admin", "challenge" ("arrival"
+	// and "desk" later).
+	Source string `json:"source"`
 	Format string `json:"format"`
 	// Event is null for a match arranged without one (future work).
 	Event    *MatchEvent `json:"event"`
@@ -152,9 +177,12 @@ type MatchStore interface {
 	// ErrNothingToSchedule.
 	PublishSchedule(ctx context.Context, eventID, adminID string, now time.Time) (ScheduleView, error)
 
-	// PublishedSchedule returns the matches a publish saved and the entries
-	// it left on standby. It returns ErrNoSuchEvent or
-	// ErrScheduleNotPublished.
+	// PublishedSchedule returns the event's matches that aren't cancelled
+	// (what a publish saved, and any an admin made by hand) and the entries
+	// on standby. Before a publish it still returns the matches made by hand,
+	// with PublishedAt null. It returns ErrNoSuchEvent, or
+	// ErrScheduleNotPublished when nothing is published and there are no
+	// matches.
 	PublishedSchedule(ctx context.Context, eventID string) (ScheduleView, error)
 
 	// ListEventEntries returns the event's entries in every status, in the
@@ -179,14 +207,53 @@ type MatchStore interface {
 	// PlayerStats returns the user's rating in each discipline (1200 where
 	// they have none yet) and their finished matches.
 	PlayerStats(ctx context.Context, userID string) (PlayerStats, error)
+
+	// Fixture editing (fixtures.go). Each action runs in one transaction
+	// that locks the event row first, then the match, then entries in ID
+	// order, and writes one match_changes row. Rules broken return a
+	// validation error (400) or a conflict error (409) with a message for
+	// the admin; unknown ones ErrNoSuchEvent, ErrNoSuchMatch or
+	// ErrNoSuchEntry. All but CancelMatch need a published event
+	// (ErrEventNotOpen).
+
+	// CreateMatch makes a match by hand from waiting paid open entries
+	// (confirmed or standby, in no match), at the given court and start or
+	// at the earliest slot that keeps every rule. Entries move to scheduled.
+	CreateMatch(ctx context.Context, in ManualMatchInput) (ScheduleMatch, error)
+
+	// SuggestSlot checks the same as CreateMatch and returns the slot and
+	// judge it would get, saving nothing.
+	SuggestSlot(ctx context.Context, in ManualMatchInput) (SlotSuggestion, error)
+
+	// FreeSlots lists every start, stepping by the format's slot length from
+	// the event's start, at which a court is free; matchID's own time counts
+	// as free when given. Players aren't checked.
+	FreeSlots(ctx context.Context, eventID, format, matchID string) ([]FreeSlot, error)
+
+	// ReplacePlayer swaps an entry of a scheduled match (not a challenge's)
+	// for a waiting one; the entry taken out becomes no_show or goes back to
+	// the pool.
+	ReplacePlayer(ctx context.Context, in ReplaceInput) (ScheduleMatch, error)
+
+	// MoveMatch gives a scheduled match a new court and start, keeping its
+	// judge if they're still free.
+	MoveMatch(ctx context.Context, in MoveInput) (ScheduleMatch, error)
+
+	// CancelMatch cancels a scheduled match (not a challenge's) and returns
+	// its entries to the pool.
+	CancelMatch(ctx context.Context, matchID, adminID string) (ScheduleMatch, error)
+
+	// ListMatchChanges returns the event's audit rows, newest first, at most
+	// matchChangesLimit. It returns ErrNoSuchEvent.
+	ListMatchChanges(ctx context.Context, eventID string) ([]MatchChange, error)
 }
 
 // PlayerStats is what a player's profile shows about their game.
 type PlayerStats struct {
 	// Ratings has every discipline: singles, doubles and mixed.
 	Ratings map[string]int `json:"ratings"`
-	// Played counts completed matches; walkovers and cancelled ones don't
-	// count (they change no rating either).
+	// Played counts completed and retired matches, the ones that are rated;
+	// walkovers, cancelled and void ones don't count.
 	Played int `json:"played"`
 	Won    int `json:"won"`
 }
@@ -229,7 +296,7 @@ func renderSchedule(d scheduleData, s Schedule, ids []string, now time.Time) Sch
 	}
 	for i, m := range s.Matches {
 		sm := ScheduleMatch{
-			Format: m.Format, Court: d.courts[m.CourtID],
+			Status: MatchScheduled, Source: SourceMatcher, Format: m.Format, Court: d.courts[m.CourtID],
 			StartsAt: m.StartsAt.UTC(), EndsAt: m.EndsAt.UTC(),
 			Flags: append([]string{}, m.Flags...),
 		}

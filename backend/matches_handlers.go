@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -28,10 +29,16 @@ type matchesResponse struct {
 // writeEntryError but worded for the admin.
 func writeMatchError(w http.ResponseWriter, err error, action string) {
 	switch {
+	case errors.Is(err, errValidation):
+		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), errValidation.Error()+": "))
+	case errors.Is(err, errConflict):
+		writeError(w, http.StatusConflict, strings.TrimPrefix(err.Error(), errConflict.Error()+": "))
 	case errors.Is(err, ErrNoSuchEvent):
 		writeError(w, http.StatusNotFound, "event not found")
 	case errors.Is(err, ErrNoSuchEntry):
 		writeError(w, http.StatusNotFound, "entry not found")
+	case errors.Is(err, ErrNoSuchMatch):
+		writeError(w, http.StatusNotFound, "match not found")
 	case errors.Is(err, ErrEventNotPublished):
 		writeError(w, http.StatusConflict, "only a published event's schedule can be published")
 	case errors.Is(err, ErrScheduleNotPublished):
@@ -95,8 +102,10 @@ func (a *API) handleAdminPublishSchedule(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusCreated, scheduleResponse{Schedule: view})
 }
 
-// handleAdminGetSchedule returns the published schedule: what was saved,
-// with each player's current rating. 404 until it's published.
+// handleAdminGetSchedule returns the saved schedule: the event's matches
+// that aren't cancelled (published ones and any made by hand), with each
+// player's current rating. Before a publish publishedAt is null; 404 while
+// nothing is published and no match has been made by hand.
 //
 //	GET /api/admin/events/{id}/schedule
 func (a *API) handleAdminGetSchedule(w http.ResponseWriter, r *http.Request, _ User) {

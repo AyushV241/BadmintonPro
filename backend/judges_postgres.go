@@ -161,7 +161,7 @@ func (s *PostgresStore) JudgeHome(ctx context.Context, userID string, now time.T
 	}
 
 	rows, err = s.pool.Query(ctx, `
-		SELECT m.id, m.status, m.format, m.starts_at, m.ends_at, m.winner_side,
+		SELECT m.id, m.status, m.format, m.starts_at, m.ends_at, m.winner_side, m.source,
 			e.id, e.title,
 			c.id, c.label,
 			`+venueColumns+`,
@@ -182,7 +182,7 @@ func (s *PostgresStore) JudgeHome(ctx context.Context, userID string, now time.T
 		var m PlayerMatch
 		var eventID, eventTitle *string
 		v := &m.Venue
-		err := row.Scan(&m.ID, &m.Status, &m.Format, &m.StartsAt, &m.EndsAt, &m.WinnerSide,
+		err := row.Scan(&m.ID, &m.Status, &m.Format, &m.StartsAt, &m.EndsAt, &m.WinnerSide, &m.Source,
 			&eventID, &eventTitle,
 			&m.Court.ID, &m.Court.Label,
 			&v.ID, &v.Name, &v.Address, &v.City, &v.Lat, &v.Lng, &v.Timezone,

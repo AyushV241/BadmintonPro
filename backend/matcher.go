@@ -84,6 +84,8 @@ type MatcherInput struct {
 // FixedMatch is a match that already has its court and time: a scheduled
 // challenge in this event, or another event's match on one of its courts.
 type FixedMatch struct {
+	// ID is the match's; fixture editing leaves a match out of its own way.
+	ID               string
 	CourtID          string
 	StartsAt, EndsAt time.Time
 	// UserIDs are its players; JudgeID is "" without a judge.

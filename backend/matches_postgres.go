@@ -171,9 +171,9 @@ func (s *PostgresStore) PublishSchedule(ctx context.Context, eventID, adminID st
 				judge = m.JudgeID
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO matches (id, event_id, format, court_id, starts_at, ends_at, judge_id)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				ids[i], eventID, m.Format, m.CourtID, m.StartsAt, m.EndsAt, judge); err != nil {
+				INSERT INTO matches (id, event_id, format, court_id, starts_at, ends_at, judge_id, source)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				ids[i], eventID, m.Format, m.CourtID, m.StartsAt, m.EndsAt, judge, SourceMatcher); err != nil {
 				return fmt.Errorf("insert match: %w", err)
 			}
 			for k, side := range m.Sides {
@@ -231,96 +231,19 @@ func (s *PostgresStore) PublishedSchedule(ctx context.Context, eventID string) (
 		return ScheduleView{}, ErrNoSuchEvent
 	case err != nil:
 		return ScheduleView{}, fmt.Errorf("load event: %w", err)
-	case view.PublishedAt == nil:
+	}
+	if view.PublishedAt != nil {
+		*view.PublishedAt = view.PublishedAt.UTC()
+	}
+	if view.Matches, err = loadScheduleMatches(ctx, s.pool, eventID, ""); err != nil {
+		return ScheduleView{}, err
+	}
+	// Matches an admin made by hand show before a publish too.
+	if view.PublishedAt == nil && len(view.Matches) == 0 {
 		return ScheduleView{}, ErrScheduleNotPublished
 	}
-	*view.PublishedAt = view.PublishedAt.UTC()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id, m.format, m.starts_at, m.ends_at, c.id, c.label,
-			j.id, COALESCE(j.name, ''), COALESCE(j.username, '')
-		FROM matches m
-		JOIN courts c ON c.id = m.court_id
-		LEFT JOIN users j ON j.id = m.judge_id
-		WHERE m.event_id = $1 AND m.status <> 'cancelled'
-		ORDER BY m.starts_at, length(c.label), c.label, m.id`, eventID)
-	if err != nil {
-		return ScheduleView{}, fmt.Errorf("load matches: %w", err)
-	}
-	view.Matches, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ScheduleMatch, error) {
-		var m ScheduleMatch
-		var id string
-		var judgeID *string
-		var judge Judge
-		err := row.Scan(&id, &m.Format, &m.StartsAt, &m.EndsAt, &m.Court.ID, &m.Court.Label,
-			&judgeID, &judge.Name, &judge.Username)
-		m.ID = &id
-		m.StartsAt, m.EndsAt = m.StartsAt.UTC(), m.EndsAt.UTC()
-		if judgeID != nil {
-			judge.UserID = *judgeID
-			m.Judge = &judge
-		}
-		return m, err
-	})
-	if err != nil {
-		return ScheduleView{}, fmt.Errorf("load matches: %w", err)
-	}
-
-	byID := make(map[string]*ScheduleMatch, len(view.Matches))
-	for i := range view.Matches {
-		byID[*view.Matches[i].ID] = &view.Matches[i]
-	}
-	rows, err = s.pool.Query(ctx, `
-		SELECT ms.match_id, ms.side, u.id, u.name, COALESCE(u.username, ''), COALESCE(r.rating, $2),
-			COALESCE(ms.entry_id, '')
-		FROM match_sides ms
-		JOIN matches m ON m.id = ms.match_id
-		JOIN users u ON u.id = ms.user_id
-		LEFT JOIN player_ratings r ON r.user_id = ms.user_id AND r.discipline = m.format
-		WHERE m.event_id = $1 AND m.status <> 'cancelled'
-		ORDER BY ms.match_id, ms.side, COALESCE(r.rating, $2) DESC, u.id`, eventID, startingRating)
-	if err != nil {
-		return ScheduleView{}, fmt.Errorf("load match sides: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var matchID, side string
-		var p MatchPlayer
-		if err := rows.Scan(&matchID, &side, &p.UserID, &p.Name, &p.Username, &p.Rating, &p.EntryID); err != nil {
-			return ScheduleView{}, fmt.Errorf("load match sides: %w", err)
-		}
-		m := byID[matchID]
-		if n := len(m.Sides); n == 0 || m.Sides[n-1].Side != side {
-			m.Sides = append(m.Sides, MatchSide{Side: side})
-		}
-		last := &m.Sides[len(m.Sides)-1]
-		last.Players = append(last.Players, p)
-	}
-	if err := rows.Err(); err != nil {
-		return ScheduleView{}, fmt.Errorf("load match sides: %w", err)
-	}
-	// The same flags the preview showed, worked out again from what was
-	// saved: ratings may have moved since.
-	for i := range view.Matches {
-		m := &view.Matches[i]
-		m.Flags = []string{}
-		for k := range m.Sides {
-			m.Sides[k].Rating = sideAverage(m.Sides[k].Players)
-		}
-		if len(m.Sides) == 2 {
-			if gap := m.Sides[0].Rating - m.Sides[1].Rating; gap > ratingGapLimit || -gap > ratingGapLimit {
-				m.Flags = append(m.Flags, fmt.Sprintf("rating gap %d", max(gap, -gap)))
-			}
-		}
-		if m.Format == FormatMixed {
-			m.Flags = append(m.Flags, FlagGenderUnchecked)
-		}
-		if m.Judge == nil {
-			m.Flags = append(m.Flags, FlagNoJudge)
-		}
-	}
-
-	rows, err = s.pool.Query(ctx, `
 		SELECT en.id, COALESCE(en.standby_reason, ''), u.id, COALESCE(u.username, ''), u.name
 		FROM entries en JOIN users u ON u.id = en.user_id
 		WHERE en.event_id = $1 AND en.status = 'standby'
@@ -340,6 +263,96 @@ func (s *PostgresStore) PublishedSchedule(ctx context.Context, eventID string) (
 		view.Standby = []ScheduleStandby{}
 	}
 	return view, nil
+}
+
+// loadScheduleMatches returns the event's matches as the schedule shows
+// them, with both sides, each player's current rating, and the flags worked
+// out again from what was saved (ratings may have moved since). With matchID
+// "" that's every match that isn't cancelled, by start and then court; with
+// a matchID just that one, whatever its status (none if it isn't the
+// event's).
+func loadScheduleMatches(ctx context.Context, q rowsQuerier, eventID, matchID string) ([]ScheduleMatch, error) {
+	rows, err := q.Query(ctx, `
+		SELECT m.id, m.status, m.source, ch.id, m.format, m.starts_at, m.ends_at, c.id, c.label,
+			j.id, COALESCE(j.name, ''), COALESCE(j.username, '')
+		FROM matches m
+		JOIN courts c ON c.id = m.court_id
+		LEFT JOIN users j ON j.id = m.judge_id
+		LEFT JOIN challenges ch ON ch.match_id = m.id
+		WHERE m.event_id = $1 AND (($2 = '' AND m.status <> 'cancelled') OR m.id = $2)
+		ORDER BY m.starts_at, length(c.label), c.label, m.id`, eventID, matchID)
+	if err != nil {
+		return nil, fmt.Errorf("load matches: %w", err)
+	}
+	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ScheduleMatch, error) {
+		var m ScheduleMatch
+		var id string
+		var judgeID *string
+		var judge Judge
+		err := row.Scan(&id, &m.Status, &m.Source, &m.ChallengeID, &m.Format, &m.StartsAt, &m.EndsAt, &m.Court.ID, &m.Court.Label,
+			&judgeID, &judge.Name, &judge.Username)
+		m.ID = &id
+		m.StartsAt, m.EndsAt = m.StartsAt.UTC(), m.EndsAt.UTC()
+		if judgeID != nil {
+			judge.UserID = *judgeID
+			m.Judge = &judge
+		}
+		return m, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load matches: %w", err)
+	}
+	if len(matches) == 0 {
+		return []ScheduleMatch{}, nil
+	}
+
+	ids := make([]string, len(matches))
+	byID := make(map[string]*ScheduleMatch, len(matches))
+	for i := range matches {
+		ids[i] = *matches[i].ID
+		byID[ids[i]] = &matches[i]
+	}
+	rows, err = q.Query(ctx, `
+		SELECT ms.match_id, ms.side, u.id, u.name, COALESCE(u.username, ''), COALESCE(r.rating, $2),
+			COALESCE(ms.entry_id, '')
+		FROM match_sides ms
+		JOIN matches m ON m.id = ms.match_id
+		JOIN users u ON u.id = ms.user_id
+		LEFT JOIN player_ratings r ON r.user_id = ms.user_id AND r.discipline = m.format
+		WHERE ms.match_id = ANY($1)
+		ORDER BY ms.match_id, ms.side, COALESCE(r.rating, $2) DESC, u.id`, ids, startingRating)
+	if err != nil {
+		return nil, fmt.Errorf("load match sides: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var matchID, side string
+		var p MatchPlayer
+		if err := rows.Scan(&matchID, &side, &p.UserID, &p.Name, &p.Username, &p.Rating, &p.EntryID); err != nil {
+			return nil, fmt.Errorf("load match sides: %w", err)
+		}
+		m := byID[matchID]
+		if n := len(m.Sides); n == 0 || m.Sides[n-1].Side != side {
+			m.Sides = append(m.Sides, MatchSide{Side: side})
+		}
+		last := &m.Sides[len(m.Sides)-1]
+		last.Players = append(last.Players, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load match sides: %w", err)
+	}
+	// The same flags the preview showed, worked out again from what was
+	// saved: ratings may have moved since.
+	for i := range matches {
+		m := &matches[i]
+		var ratings []int
+		for k := range m.Sides {
+			m.Sides[k].Rating = sideAverage(m.Sides[k].Players)
+			ratings = append(ratings, m.Sides[k].Rating)
+		}
+		m.Flags = matchFlags(m.Format, ratings, m.Judge != nil)
+	}
+	return matches, nil
 }
 
 // adminEntryColumns is an entries row (en) with its player (u), partner (p)
@@ -532,7 +545,7 @@ const userMatchesLimit = 100
 
 func (s *PostgresStore) ListUserMatches(ctx context.Context, userID string) ([]PlayerMatch, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id, m.status, m.format, m.starts_at, m.ends_at, m.winner_side, me.side,
+		SELECT m.id, m.status, m.source, m.format, m.starts_at, m.ends_at, m.winner_side, me.side,
 			e.id, e.title,
 			c.id, c.label,
 			`+venueColumns+`,
@@ -556,7 +569,7 @@ func (s *PostgresStore) ListUserMatches(ctx context.Context, userID string) ([]P
 		var eventID, eventTitle, judgeID *string
 		var judge Judge
 		v := &m.Venue
-		err := row.Scan(&m.ID, &m.Status, &m.Format, &m.StartsAt, &m.EndsAt, &m.WinnerSide, &m.MySide,
+		err := row.Scan(&m.ID, &m.Status, &m.Source, &m.Format, &m.StartsAt, &m.EndsAt, &m.WinnerSide, &m.MySide,
 			&eventID, &eventTitle,
 			&m.Court.ID, &m.Court.Label,
 			&v.ID, &v.Name, &v.Address, &v.City, &v.Lat, &v.Lng, &v.Timezone,
@@ -641,7 +654,7 @@ func (s *PostgresStore) PlayerStats(ctx context.Context, userID string) (PlayerS
 	if err := s.pool.QueryRow(ctx, `
 		SELECT count(*), count(*) FILTER (WHERE m.winner_side = ms.side)
 		FROM match_sides ms JOIN matches m ON m.id = ms.match_id
-		WHERE ms.user_id = $1 AND m.status = 'completed'`, userID,
+		WHERE ms.user_id = $1 AND m.status IN ('completed', 'retired')`, userID,
 	).Scan(&stats.Played, &stats.Won); err != nil {
 		return PlayerStats{}, fmt.Errorf("count matches: %w", err)
 	}

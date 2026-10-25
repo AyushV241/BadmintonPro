@@ -97,7 +97,8 @@ func TestListEventsPublishedUpcomingInStartOrder(t *testing.T) {
 	if smash.Venue.Name != "Koramangala Sports Arena" || smash.Venue.Timezone != demoTimezone {
 		t.Errorf("venue = %+v", smash.Venue)
 	}
-	if smash.FeePaise != 5000 || smash.Currency != "INR" || smash.SpotsLeft != smash.Capacity {
+	// The seed's paid entries take spots.
+	if smash.FeePaise != 5000 || smash.Currency != "INR" || smash.SpotsLeft != smash.Capacity-len(saturdayEntries) {
 		t.Errorf("fee/spots = %d %s %d/%d", smash.FeePaise, smash.Currency, smash.SpotsLeft, smash.Capacity)
 	}
 	if smash.MaxMatches != 20 {

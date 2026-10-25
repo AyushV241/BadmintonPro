@@ -292,6 +292,9 @@ export async function searchUsers(q: string, signal?: AbortSignal): Promise<Publ
 
 // --- Matches ----------------------------------------------------------------
 
+/** How a match was made: the matcher, an admin by hand, a challenge, on arrival, or at the desk. */
+export type MatchSource = "matcher" | "admin" | "challenge" | "arrival" | "desk";
+
 export type MatchStatus = "scheduled" | "ready" | "live" | "completed" | "walkover" | "cancelled";
 
 export type MatchPlayer = { userId: string; name: string; username: string; rating: number };
@@ -313,6 +316,8 @@ export type MyMatch = {
   winnerSide: "A" | "B" | null;
   /** Set when a challenge fixed this match. */
   challengeId: string | null;
+  /** How it was made. */
+  source: MatchSource;
 };
 
 /** The signed-in player's matches, soonest first. */
@@ -542,6 +547,12 @@ export type ScheduledMatch = {
   sides: { side: "A" | "B"; players: (MatchPlayer & { entryId: string })[]; rating: number }[];
   /** E.g. "rating gap 240", "no judge", "gender balance not checked". */
   flags: string[];
+  /** Saved matches only. */
+  status?: MatchStatus;
+  /** How it was made. */
+  source?: MatchSource;
+  /** Set when a challenge fixed it: the players chose each other, so it can be moved but not re-paired or cancelled. */
+  challengeId?: string | null;
 };
 
 export type Schedule = {
@@ -614,6 +625,106 @@ export async function adminMarkPaid(entryId: string): Promise<AdminEntry> {
     { method: "POST" },
   );
   return entry;
+}
+
+// Fixture editing: the admin pairs players by hand, swaps a player, moves or
+// cancels a match. Every change is checked like the matcher's own (court
+// free, players never back to back, a judge who isn't playing) and logged.
+
+/** A court and time a match could take. */
+export type FreeSlot = { court: Court; startsAt: string; endsAt: string };
+
+/** Where a new match would go, and the judge it would get. */
+export type SuggestedSlot = FreeSlot & { judge: Judge | null; flags: string[] };
+
+export type NewMatch = {
+  format: EventFormat;
+  sideA: string[];
+  sideB: string[];
+  /** Both or neither: without them the earliest slot that suits everyone is used. */
+  courtId?: string;
+  startsAt?: string;
+};
+
+export async function adminCreateMatch(eventId: string, match: NewMatch): Promise<ScheduledMatch> {
+  const { match: created } = await request<{ match: ScheduledMatch }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/matches`,
+    { method: "POST", body: JSON.stringify(match) },
+  );
+  return created;
+}
+
+/** What creating these entries' match would do, without saving it. */
+export async function adminSuggestSlot(
+  eventId: string,
+  format: EventFormat,
+  entryIds: string[],
+  at?: { courtId: string; startsAt: string },
+): Promise<SuggestedSlot> {
+  const { slot } = await request<{ slot: SuggestedSlot }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/matches/suggest`,
+    { method: "POST", body: JSON.stringify({ format, entryIds, ...at }) },
+  );
+  return slot;
+}
+
+/** Court-free starts in the event's window; `matchId`'s own time counts as free (for moving it). */
+export async function adminFreeSlots(eventId: string, format: EventFormat, matchId?: string): Promise<FreeSlot[]> {
+  const params = new URLSearchParams({ format });
+  if (matchId) params.set("matchId", matchId);
+  const { slots } = await request<{ slots: FreeSlot[] }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/free-slots?${params}`,
+  );
+  return slots;
+}
+
+/** "no_show": the player missed it and keeps no refund. "back_to_pool": they wait for another match. */
+export type ReplaceOutcome = "no_show" | "back_to_pool";
+
+export async function adminReplacePlayer(
+  matchId: string,
+  outEntryId: string,
+  inEntryId: string,
+  outcome: ReplaceOutcome,
+): Promise<ScheduledMatch> {
+  const { match } = await request<{ match: ScheduledMatch }>(`/api/admin/matches/${encodeURIComponent(matchId)}/replace`, {
+    method: "POST",
+    body: JSON.stringify({ outEntryId, inEntryId, outcome }),
+  });
+  return match;
+}
+
+export async function adminMoveMatch(matchId: string, courtId: string, startsAt: string): Promise<ScheduledMatch> {
+  const { match } = await request<{ match: ScheduledMatch }>(`/api/admin/matches/${encodeURIComponent(matchId)}/move`, {
+    method: "POST",
+    body: JSON.stringify({ courtId, startsAt }),
+  });
+  return match;
+}
+
+/** Its players go back to waiting for a match. Not for challenge matches. */
+export async function adminCancelMatch(matchId: string): Promise<ScheduledMatch> {
+  const { match } = await request<{ match: ScheduledMatch }>(`/api/admin/matches/${encodeURIComponent(matchId)}/cancel`, {
+    method: "POST",
+  });
+  return match;
+}
+
+export type MatchChange = {
+  id: string;
+  matchId: string;
+  action: "create" | "replace" | "move" | "cancel";
+  admin: PublicUser;
+  details: Record<string, unknown>;
+  createdAt: string;
+};
+
+/** Every hand edit to the event's matches, newest first. */
+export async function adminListChanges(eventId: string): Promise<MatchChange[]> {
+  const { changes } = await request<{ changes: MatchChange[] }>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/changes`,
+  );
+  return changes;
 }
 
 // --- Payments ---------------------------------------------------------------

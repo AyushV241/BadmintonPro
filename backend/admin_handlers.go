@@ -64,6 +64,15 @@ func (a *API) registerAdminRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/admin/events/{id}/schedule/preview", a.adminRoute(a.handleAdminPreviewSchedule))
 		mux.HandleFunc("POST /api/admin/events/{id}/schedule/publish", a.adminRoute(a.handleAdminPublishSchedule))
 		mux.HandleFunc("POST /api/admin/entries/{id}/mark-paid", a.adminRoute(a.handleAdminMarkEntryPaid))
+
+		// Fixture editing by hand (fixtures_handlers.go).
+		mux.HandleFunc("POST /api/admin/events/{id}/matches", a.adminRoute(a.handleAdminCreateMatch))
+		mux.HandleFunc("POST /api/admin/events/{id}/matches/suggest", a.adminRoute(a.handleAdminSuggestSlot))
+		mux.HandleFunc("GET /api/admin/events/{id}/free-slots", a.adminRoute(a.handleAdminFreeSlots))
+		mux.HandleFunc("GET /api/admin/events/{id}/changes", a.adminRoute(a.handleAdminListMatchChanges))
+		mux.HandleFunc("POST /api/admin/matches/{id}/replace", a.adminRoute(a.handleAdminReplacePlayer))
+		mux.HandleFunc("POST /api/admin/matches/{id}/move", a.adminRoute(a.handleAdminMoveMatch))
+		mux.HandleFunc("POST /api/admin/matches/{id}/cancel", a.adminRoute(a.handleAdminCancelMatch))
 	}
 }
 

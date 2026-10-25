@@ -1,10 +1,8 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
-	"slices"
 	"time"
 )
 
@@ -276,106 +274,11 @@ type SlotChoice struct {
 // never overlapping or back-to-back). Among courts free then, the first in
 // courtOrder. ok is false when nothing fits.
 //
-// Every constraint rules out an open stretch of start times, so the free
-// starts form closed stretches whose ends are the window's ends or a taken
-// match's edges (less the slot, or widened by the gap). The nearest free
-// start is the preferred one or one of those ends, so only they are tried.
-//
 // The judge is one of the event's judges who isn't one of the players and
 // isn't playing or judging another match at an overlapping time, with the
 // fewest matches to judge already (then the lowest user ID), as the matcher
-// does; none free leaves JudgeID "".
+// does; none free leaves JudgeID "". Fixture editing picks slots the same
+// way: see findSlot.
 func findChallengeSlot(r SlotRequest) (SlotChoice, bool) {
-	length := r.Length
-	latest := r.EndsAt.Add(-length)
-	if length <= 0 || latest.Before(r.StartsAt) || len(r.Courts) == 0 {
-		return SlotChoice{}, false
-	}
-	courts := courtOrder(r.Courts)
-	isPlayer := map[string]bool{}
-	for _, u := range r.PlayerIDs {
-		isPlayer[u] = true
-	}
-	courtBusy := map[string][]busy{}
-	var playerBusy []busy // either player's matches
-	for _, f := range r.Taken {
-		b := busy{start: f.StartsAt, end: f.EndsAt}
-		courtBusy[f.CourtID] = append(courtBusy[f.CourtID], b)
-		if slices.ContainsFunc(f.UserIDs, func(u string) bool { return isPlayer[u] }) {
-			playerBusy = append(playerBusy, b)
-		}
-	}
-
-	candidates := []time.Time{r.Preferred, r.StartsAt, latest}
-	for _, c := range courts {
-		for _, b := range courtBusy[c.ID] {
-			candidates = append(candidates, b.end, b.start.Add(-length))
-		}
-	}
-	for _, b := range playerBusy {
-		gap := min(length, b.length())
-		candidates = append(candidates, b.end.Add(gap), b.start.Add(-gap-length))
-	}
-	distance := func(t time.Time) time.Duration {
-		d := t.Sub(r.Preferred)
-		if d < 0 {
-			return -d
-		}
-		return d
-	}
-	slices.SortFunc(candidates, func(a, b time.Time) int {
-		if c := cmp.Compare(distance(a), distance(b)); c != 0 {
-			return c
-		}
-		return a.Compare(b)
-	})
-
-	var choice SlotChoice
-search:
-	for _, t := range candidates {
-		if t.Before(r.StartsAt) || t.After(latest) {
-			continue
-		}
-		end := t.Add(length)
-		for _, b := range playerBusy {
-			gap := min(length, b.length())
-			if t.Before(b.end.Add(gap)) && end.Add(gap).After(b.start) {
-				continue search
-			}
-		}
-		for _, c := range courts {
-			if !overlapsAny(courtBusy[c.ID], t, end) {
-				choice = SlotChoice{CourtID: c.ID, StartsAt: t, EndsAt: end}
-				break search
-			}
-		}
-	}
-	if choice.CourtID == "" {
-		return SlotChoice{}, false
-	}
-
-	judgeBusy := map[string][]busy{}
-	judged := map[string]int{}
-	for _, f := range r.Taken {
-		b := busy{start: f.StartsAt, end: f.EndsAt}
-		for _, u := range f.UserIDs {
-			judgeBusy[u] = append(judgeBusy[u], b)
-		}
-		if f.JudgeID != "" {
-			judgeBusy[f.JudgeID] = append(judgeBusy[f.JudgeID], b)
-			judged[f.JudgeID]++
-		}
-	}
-	judges := slices.Clone(r.JudgeIDs)
-	slices.Sort(judges)
-	judges = slices.Compact(judges)
-	for _, j := range judges {
-		if isPlayer[j] || overlapsAny(judgeBusy[j], choice.StartsAt, choice.EndsAt) {
-			continue
-		}
-		if choice.JudgeID == "" || judged[j] < judged[choice.JudgeID] {
-			choice.JudgeID = j
-		}
-	}
-	return choice, true
+	return findSlot(r)
 }

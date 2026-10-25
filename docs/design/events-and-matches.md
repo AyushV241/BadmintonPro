@@ -80,8 +80,9 @@ matches separate from events so that can be added without a redesign.
 7. **A match that players have already been told about is never quietly
    reshuffled.** Late changes, such as walk-ins or no-shows, only fill
    empty slots or replace a missing player. They never move someone who
-   has already been notified. (Later, an admin will be able to move or
-   delete a slot by hand, and the players are told. Not in version 1.)
+   has already been notified. Only an admin moves a published match, by
+   hand (section 10, "Editing fixtures by hand", built); the players see
+   the change in the app, and are told once notifications exist.
 8. **The server is the source of truth for scores.** The judge's app sends
    point events; the server checks them against the scoring rules and works
    out the score.
@@ -570,7 +571,7 @@ change_A   = round(K × (result_A - expected_A))
 - Anything that changes data stays POST, PUT or DELETE. The session cookie
   is SameSite=Lax, which still rides along on cross-site GET navigations.
 - Consider an audit row per admin action. Events already record
-  `created_by`.
+  `created_by`; fixture edits write one to `match_changes` (below).
 
 ### Judge accounts (Decided, built: migration `000011`)
 
@@ -630,11 +631,71 @@ event is saved and when it's published, inside the transaction.
   formats, capacity, `max_matches` and fee.
 - Register judges by phone number, and assign them to events.
 - Preview, run and publish the schedule.
-- Later: move or delete scheduled slots, telling the players affected.
+- Edit fixtures by hand: make a match, replace a player, move or cancel a
+  match (built, below). Telling the players comes with notifications.
 - Run the walk-in desk.
 - Mark no-shows.
 - Void matches.
 - Resolve disputes.
+
+### Editing fixtures by hand (built: migration `000012`)
+
+The admin's tools for section 6's "admins can redo any fixture"
+(`backend/fixtures*.go`). They work whether or not the schedule has been
+published, on a published event (cancelling works in any status). Each runs
+in one transaction that locks the event row first, then the match, then
+entries in ID order, the same order as joining, the desk and publishing.
+
+- **Make a match** (`POST /api/admin/events/{id}/matches`) from waiting
+  paid entries: open, `confirmed` or `standby`, in no match. Singles takes
+  one entry a side, doubles and mixed two. Each entry must allow the
+  format and the event must offer it; no player twice or on both sides.
+  The court and start are optional. Given, the court must be the event's,
+  the slot inside the window, the court free (other events' matches on it
+  included) and every player clear of their other matches by the gap (the
+  shorter slot length, section 6; their matches in other events count,
+  and a player can't be judging another match then). Left out, the
+  earliest slot that keeps all that, the first court on a tie: the same
+  slot search challenges use (`findSlot`). `max_matches` counts the
+  event's matches that aren't cancelled. The judge is chosen as the
+  matcher does: on the event's list, free, not playing, fewest matches,
+  then lowest user ID; none free means no judge and the "no judge" flag.
+  Entries move to `scheduled`; the standby reason is cleared. A rating gap
+  over 200 is allowed and flagged. The match's `source` is `admin`
+  (`matcher` for a publish, `challenge` for a challenge's).
+- **Suggest a slot** (`…/matches/suggest`): the same checks and choice,
+  saving nothing, so the admin sees the court, time and judge first.
+  **Free slots** (`GET …/free-slots`) lists every court-free start for the
+  time picker, stepping by the slot length from the event's start; players
+  aren't checked there.
+- **Replace a player** (`POST /api/admin/matches/{id}/replace`) in a
+  `scheduled` or `ready` match, not a challenge's (both players chose each
+  other). The incoming entry must be waiting, of the same event, allow the
+  match's format, keep the gap, and its player can't already be in the
+  match. The outgoing entry becomes `no_show` (no refund, section 4.4; it
+  keeps its `match_id` as the match missed) or goes back to the pool
+  (`confirmed`), as the admin chooses. A judge who comes in as a player is
+  replaced by another judge, or none and the flag.
+- **Move a match** (`…/move`): a new court and start for a `scheduled` or
+  `ready` match, challenges' included (their players chose each other, not
+  the slot). Same checks as making one, ignoring the match itself. The
+  judge stays if still on the list and free, otherwise another or none.
+- **Cancel a match** (`…/cancel`): `cancelled`, never deleted (rule 5). Its
+  open entries go back to the pool; their `match_sides` rows keep the
+  player but drop the entry, so the entry can be used again (rule 9: one
+  match at a time). A challenge's match can't be cancelled here: its
+  locked entries were paid for that pairing, so it ends by withdrawing or
+  refunding.
+- **Audit:** every action writes a `match_changes` row: who, when, and the
+  before and after in `details` (court, times and judge; entries in and out
+  with the outcome; entries released). `GET
+  /api/admin/events/{id}/changes` lists the latest 100.
+- **The schedule** (`GET /api/admin/events/{id}/schedule`) shows matches
+  made by hand before any publish (`publishedAt` null). Publishing later
+  works around them like challenges: their entries aren't in the pool,
+  their court time is taken, and they count towards `max_matches`.
+
+Not yet: telling the players (step 11), and re-pairing a whole category.
 
 ---
 
@@ -659,7 +720,12 @@ and one open (`created`) order per entry. `000010` adds `challenges`
 that locked entries have one and open entries don't. A partial unique index
 on (event, the pair in either order) allows one open (`pending` or
 `accepted`) challenge per pair per event. `000011` adds `judges` and
-`sessions.mode` (section 10, "Judge accounts"). The rest is proposed.
+`sessions.mode` (section 10, "Judge accounts"). `000012` adds
+`match_changes`, the audit of fixture edits (section 10, "Editing fixtures
+by hand"), and `matches.source`: how a match was made (`matcher`, `admin`,
+`challenge`, with `arrival` and `desk` reserved for on-the-spot matching);
+existing challenge matches were backfilled as `challenge`, the rest
+`matcher`. The rest is proposed.
 
 | Table | Key columns |
 | --- | --- |
@@ -673,8 +739,9 @@ on (event, the pair in either order) allows one open (`pending` or
 | `event_checkins` | event_id, user_id, checked_in_at. One check-in per player per event covers all their entries |
 | `payments` | id, entry_id, user_id, provider (`razorpay`, `fake`, `offline`), kind (`online` or `offline`), provider_order_id, provider_payment_id, amount_paise, currency, status (`created`, `paid`, `failed`, `refund_pending`, `refunded`), recorded_by (admin, for offline), refund_id, paid_at, refunded_at (built, `000009`). One paid payment per entry |
 | `challenges` | id, event_id, format (`singles` only for now), challenger_id, opponent_id, preferred_start, status (`pending`, `accepted`, `scheduled`, `declined`, `withdrawn`, `expired`, `failed`), expires_at (the one deadline), responded_at, match_id (once fixed), created_at, updated_at. At most one open challenge per pair per event (built, `000010`) |
-| `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side. Every match is rated; a voided match is reversed (section 9) |
+| `matches` | id, event_id (nullable), format, court_id, starts_at, slot_minutes, judge_id, status, winner_side, source (built, `000012`). Every match is rated; a voided match is reversed (section 9) |
 | `match_sides` | match_id, side (`A` or `B`), user_id, entry_id |
+| `match_changes` | id, match_id, event_id, admin_id, action (`create`, `replace`, `move`, `cancel`), details (JSON: before and after), created_at (built, `000012`) |
 | `match_points` | match_id, seq, side, kind (`point` or `undo`), client_id, created_at. Unique on (match_id, seq) and (match_id, client_id) |
 | `player_ratings` | user_id, discipline, rating, matches_played, provisional. Key: (user_id, discipline) |
 | `rating_changes` | match_id, user_id, discipline, before, after, delta. Unique on (match_id, user_id, discipline) |
@@ -755,8 +822,9 @@ from the last 60 days, Proposed).
   applies: it's never moved once the players have been told. If no judge
   is free at that time, the slot is still fixed and the admin is asked to
   assign one.
-  - TODO (later): admins will be able to move and delete scheduled slots,
-    telling the players affected. Not built in version 1.
+  - An admin can move a challenge's match by hand (section 10, "Editing
+    fixtures by hand"), but not replace a player or cancel it there.
+    Telling the players comes with notifications.
 - **Rated** (Decided): like every match we schedule. There's no cap on
   rated matches between the same two players.
 - **Pulling out.** Either player can withdraw before both have paid; anyone
@@ -902,7 +970,10 @@ Every scheduled match is rated (Decided), so these are too.
    until step 9. Screens: admin "Entries & schedule"
    (`/admin/events/{id}/schedule`: mark paid, preview, publish, the saved
    schedule) and the player's Matches tab (`/matches`). Event pages show
-   the venue on a Google map with directions.
+   the venue on a Google map with directions. **Backend done:** fixture
+   editing by hand (section 10, migration `000012`): make, suggest, replace,
+   move and cancel, free slots, and the audit list; the schedule shows
+   matches made by hand before a publish.
 7. **Backend done:** challenges (section 12): request, accept, both pay,
    fixed slot (migration `000010`): `POST /api/challenges`, `GET
    /api/me/challenges`, `GET /api/challenges/{id}`, `POST

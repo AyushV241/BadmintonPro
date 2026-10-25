@@ -87,22 +87,60 @@ var demoPlayers = []demoPlayer{
 	{"usr_demo_nisha", "demo_nisha", "Nisha Joshi", 1180, 1210},
 	{"usr_demo_aditya", "demo_aditya", "Aditya Rao", 1140, 1150},
 	{"usr_demo_tara", "demo_tara", "Tara D'Souza", 1100, 1120},
+	// Twelve inside Saturday Smash's 1300–1700 band, and eight around it.
+	{"usr_demo_neha", "demo_neha", "Neha Sharma", 1690, 1660},
+	{"usr_demo_karan", "demo_karan", "Karan Kapoor", 1650, 1620},
+	{"usr_demo_pooja", "demo_pooja", "Pooja Iyer", 1610, 1590},
+	{"usr_demo_varun", "demo_varun", "Varun Bhat", 1570, 1540},
+	{"usr_demo_riya", "demo_riya", "Riya Das", 1530, 1550},
+	{"usr_demo_manish", "demo_manish", "Manish Patil", 1490, 1470},
+	{"usr_demo_divya", "demo_divya", "Divya Shetty", 1450, 1480},
+	{"usr_demo_suresh", "demo_suresh", "Suresh Gowda", 1410, 1390},
+	{"usr_demo_lakshmi", "demo_lakshmi", "Lakshmi Narayan", 1370, 1400},
+	{"usr_demo_farhan", "demo_farhan", "Farhan Qureshi", 1340, 1310},
+	{"usr_demo_shreya", "demo_shreya", "Shreya Ghosh", 1320, 1350},
+	{"usr_demo_aman", "demo_aman", "Aman Verma", 1305, 1290},
+	{"usr_demo_zoya", "demo_zoya", "Zoya Khan", 1250, 1280},
+	{"usr_demo_nikhil", "demo_nikhil", "Nikhil Jain", 1230, 1250},
+	{"usr_demo_isha", "demo_isha", "Isha Agarwal", 1200, 1230},
+	{"usr_demo_omkar", "demo_omkar", "Omkar Deshpande", 1170, 1190},
+	{"usr_demo_fatima", "demo_fatima", "Fatima Sheikh", 1150, 1170},
+	{"usr_demo_yash", "demo_yash", "Yash Thakur", 1120, 1100},
+	{"usr_demo_gauri", "demo_gauri", "Gauri Kulkarni", 1080, 1110},
+	{"usr_demo_tenzin", "demo_tenzin", "Tenzin Dorje", 1820, 1780},
 }
 
-// demoJudges judge "Midweek Rally Night". They have no ratings rows.
+// demoJudges are registered judges, assigned to events by demoPools. They
+// have no ratings rows.
 var demoJudges = []demoPlayer{
 	{id: "usr_demo_sameer", username: "demo_sameer", name: "Sameer Khan"},
 	{id: "usr_demo_lata", username: "demo_lata", name: "Lata Krishnan"},
+	{id: "usr_demo_ramesh", username: "demo_ramesh", name: "Ramesh Iyer"},
+	{id: "usr_demo_anjali", username: "demo_anjali", name: "Anjali Desai"},
+	{id: "usr_demo_prakash", username: "demo_prakash", name: "Prakash Rao"},
+	{id: "usr_demo_meenakshi", username: "demo_meenakshi", name: "Meenakshi Sundaram"},
+	{id: "usr_demo_joseph", username: "demo_joseph", name: "Joseph Mathew"},
+	{id: "usr_demo_sunita", username: "demo_sunita", name: "Sunita Kamath"},
+	{id: "usr_demo_harish", username: "demo_harish", name: "Harish Babu"},
+	{id: "usr_demo_leela", username: "demo_leela", name: "Leela Fernandes"},
 }
 
 // demoJudgePhones are the numbers the demo judges are registered with, so
 // "Log in as judge" works on them (OTP_PROVIDER=console prints the code).
 var demoJudgePhones = map[string]string{
-	"usr_demo_sameer": "+919999900001",
-	"usr_demo_lata":   "+919999900002",
+	"usr_demo_sameer":    "+919999900001",
+	"usr_demo_lata":      "+919999900002",
+	"usr_demo_ramesh":    "+919999900003",
+	"usr_demo_anjali":    "+919999900004",
+	"usr_demo_prakash":   "+919999900005",
+	"usr_demo_meenakshi": "+919999900006",
+	"usr_demo_joseph":    "+919999900007",
+	"usr_demo_sunita":    "+919999900008",
+	"usr_demo_harish":    "+919999900009",
+	"usr_demo_leela":     "+919999900010",
 }
 
-// demoEntry is a confirmed open entry in demoEntryEvent. They join in this
+// demoEntry is a confirmed open entry in a demo pool. They join in this
 // order, a minute apart.
 type demoEntry struct {
 	id, userID string
@@ -138,7 +176,58 @@ var (
 		{"ent_demo_nisha", "usr_demo_nisha", either, ""},
 		{"ent_demo_tara", "usr_demo_tara", either, ""},
 	}
+
+	mixedOnly      = []string{FormatMixed}
+	doublesOrMixed = []string{FormatDoubles, FormatMixed}
+
+	// Saturday Smash: twelve singles players, all inside its rating band.
+	saturdayEntries = []demoEntry{
+		{"ent_demo_sat_neha", "usr_demo_neha", singlesOnly, ""},
+		{"ent_demo_sat_karan", "usr_demo_karan", singlesOnly, ""},
+		{"ent_demo_sat_pooja", "usr_demo_pooja", singlesOnly, ""},
+		{"ent_demo_sat_varun", "usr_demo_varun", singlesOnly, ""},
+		{"ent_demo_sat_riya", "usr_demo_riya", singlesOnly, ""},
+		{"ent_demo_sat_manish", "usr_demo_manish", singlesOnly, ""},
+		{"ent_demo_sat_divya", "usr_demo_divya", singlesOnly, ""},
+		{"ent_demo_sat_suresh", "usr_demo_suresh", singlesOnly, ""},
+		{"ent_demo_sat_lakshmi", "usr_demo_lakshmi", singlesOnly, ""},
+		{"ent_demo_sat_farhan", "usr_demo_farhan", singlesOnly, ""},
+		{"ent_demo_sat_shreya", "usr_demo_shreya", singlesOnly, ""},
+		{"ent_demo_sat_aman", "usr_demo_aman", singlesOnly, ""},
+	}
+
+	// Sunday Doubles Ladder: doubles, mixed and both; one doubles pair and
+	// one mixed pair who joined together.
+	sundayEntries = []demoEntry{
+		{"ent_demo_sun_zoya", "usr_demo_zoya", doublesOnly, "usr_demo_nikhil"},
+		{"ent_demo_sun_nikhil", "usr_demo_nikhil", doublesOnly, "usr_demo_zoya"},
+		{"ent_demo_sun_isha", "usr_demo_isha", mixedOnly, "usr_demo_omkar"},
+		{"ent_demo_sun_omkar", "usr_demo_omkar", mixedOnly, "usr_demo_isha"},
+		{"ent_demo_sun_fatima", "usr_demo_fatima", doublesOnly, ""},
+		{"ent_demo_sun_yash", "usr_demo_yash", doublesOnly, ""},
+		{"ent_demo_sun_gauri", "usr_demo_gauri", mixedOnly, ""},
+		{"ent_demo_sun_tenzin", "usr_demo_tenzin", mixedOnly, ""},
+		{"ent_demo_sun_neha", "usr_demo_neha", doublesOrMixed, ""},
+		{"ent_demo_sun_karan", "usr_demo_karan", doublesOrMixed, ""},
+		{"ent_demo_sun_riya", "usr_demo_riya", doublesOrMixed, ""},
+		{"ent_demo_sun_divya", "usr_demo_divya", doublesOrMixed, ""},
+	}
 )
+
+// demoPool is an event's demo judges and paid entries.
+type demoPool struct {
+	judges  []string
+	entries []demoEntry
+}
+
+// demoPools fill the demo events. Each published event gets judges and paid
+// entries ready for the matcher; the draft gets judges only.
+var demoPools = map[string]demoPool{
+	demoEntryEvent:            {judges: []string{"usr_demo_sameer", "usr_demo_lata"}, entries: demoEntries},
+	"evt_demo_saturday_smash": {judges: []string{"usr_demo_ramesh", "usr_demo_anjali", "usr_demo_prakash", "usr_demo_meenakshi"}, entries: saturdayEntries},
+	"evt_demo_sunday_ladder":  {judges: []string{"usr_demo_joseph", "usr_demo_sunita"}, entries: sundayEntries},
+	"evt_demo_draft_open":     {judges: []string{"usr_demo_harish", "usr_demo_leela"}},
+}
 
 // demoRegistrationWindow is how long before the start joining closes.
 const demoRegistrationWindow = 2 * time.Hour
@@ -278,8 +367,8 @@ func seedDemo(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 					return fmt.Errorf("event court: %w", err)
 				}
 			}
-			if e.id == demoEntryEvent {
-				if err := seedDemoPool(ctx, tx, now); err != nil {
+			if pool, ok := demoPools[e.id]; ok {
+				if err := seedDemoPool(ctx, tx, e.id, pool, now); err != nil {
 					return err
 				}
 			}
@@ -288,19 +377,19 @@ func seedDemo(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 	})
 }
 
-// seedDemoPool adds demoEntryEvent's judges and resets its demo entries to
+// seedDemoPool adds an event's demo judges and resets its demo entries to
 // confirmed, ready for the matcher. Only called while the event has no
 // matches.
-func seedDemoPool(ctx context.Context, tx pgx.Tx, now time.Time) error {
-	for _, j := range demoJudges {
+func seedDemoPool(ctx context.Context, tx pgx.Tx, eventID string, pool demoPool, now time.Time) error {
+	for _, judgeID := range pool.judges {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO event_judges (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-			demoEntryEvent, j.id,
+			eventID, judgeID,
 		); err != nil {
-			return fmt.Errorf("judge %s: %w", j.id, err)
+			return fmt.Errorf("judge %s: %w", judgeID, err)
 		}
 	}
-	for i, en := range demoEntries {
+	for i, en := range pool.entries {
 		var partner any // nil: no partner
 		if en.partnerID != "" {
 			partner = en.partnerID
@@ -311,8 +400,8 @@ func seedDemoPool(ctx context.Context, tx pgx.Tx, now time.Time) error {
 			VALUES ($1, $2, $3, 'open', $4, $5, 'online', 'confirmed', $6)
 			ON CONFLICT (id) DO UPDATE SET formats = $4, partner_user_id = $5, status = 'confirmed',
 				hold_expires_at = NULL, match_id = NULL, standby_reason = NULL, updated_at = now()`,
-			en.id, demoEntryEvent, en.userID, en.formats, partner,
-			now.Add(-time.Duration(len(demoEntries)-i)*time.Minute),
+			en.id, eventID, en.userID, en.formats, partner,
+			now.Add(-time.Duration(len(pool.entries)-i)*time.Minute),
 		); err != nil {
 			return fmt.Errorf("entry %s: %w", en.id, err)
 		}

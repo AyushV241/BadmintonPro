@@ -594,7 +594,7 @@ func (s *PostgresStore) WithdrawChallenge(ctx context.Context, userID, challenge
 // courts overlapping its window (OtherEvent).
 func loadFixedMatches(ctx context.Context, q rowsQuerier, eventID string, startsAt, endsAt time.Time) ([]FixedMatch, error) {
 	rows, err := q.Query(ctx, `
-		SELECT m.court_id, m.starts_at, m.ends_at, COALESCE(m.judge_id, ''), m.event_id IS DISTINCT FROM $1,
+		SELECT m.id, m.court_id, m.starts_at, m.ends_at, COALESCE(m.judge_id, ''), m.event_id IS DISTINCT FROM $1,
 			COALESCE(array_agg(ms.user_id ORDER BY ms.user_id) FILTER (WHERE ms.user_id IS NOT NULL), '{}')
 		FROM matches m
 		LEFT JOIN match_sides ms ON ms.match_id = m.id
@@ -609,7 +609,7 @@ func loadFixedMatches(ctx context.Context, q rowsQuerier, eventID string, starts
 	}
 	fixed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (FixedMatch, error) {
 		var f FixedMatch
-		err := row.Scan(&f.CourtID, &f.StartsAt, &f.EndsAt, &f.JudgeID, &f.OtherEvent, &f.UserIDs)
+		err := row.Scan(&f.ID, &f.CourtID, &f.StartsAt, &f.EndsAt, &f.JudgeID, &f.OtherEvent, &f.UserIDs)
 		f.StartsAt, f.EndsAt = f.StartsAt.UTC(), f.EndsAt.UTC()
 		return f, err
 	})
@@ -708,9 +708,9 @@ func fixChallengeMatch(ctx context.Context, tx pgx.Tx, challengeID string, now t
 		judge = choice.JudgeID
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO matches (id, event_id, format, court_id, starts_at, ends_at, judge_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		matchID, c.eventID, FormatSingles, choice.CourtID, choice.StartsAt, choice.EndsAt, judge); err != nil {
+		INSERT INTO matches (id, event_id, format, court_id, starts_at, ends_at, judge_id, source)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		matchID, c.eventID, FormatSingles, choice.CourtID, choice.StartsAt, choice.EndsAt, judge, SourceChallenge); err != nil {
 		return nil, fmt.Errorf("insert match: %w", err)
 	}
 	// The challenger is side A.

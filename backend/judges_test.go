@@ -271,6 +271,9 @@ func TestJudgeHomeListsAssignedMatches(t *testing.T) {
 		if m.Judge == nil || m.Judge.UserID != "usr_demo_sameer" || len(m.Sides) != 2 || m.MySide != "" {
 			t.Errorf("match %s: judge %+v, %d sides, mySide %q", m.ID, m.Judge, len(m.Sides), m.MySide)
 		}
+		if m.Source != SourceMatcher { // the seed's matches come from a publish
+			t.Errorf("match %s: source %q, want %q", m.ID, m.Source, SourceMatcher)
+		}
 	}
 	// The seed registers its judges, so they can sign in as judges.
 	u, err := store.JudgeForPhone(ctx, demoJudgePhones["usr_demo_sameer"])
