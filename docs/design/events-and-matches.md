@@ -225,27 +225,36 @@ matches separate from events so that can be added without a redesign.
 
 ## 6. Matching algorithm
 
-**When it runs** (Decided with Ayush: rolling runs; not built yet):
+**When it runs** (Decided with Ayush: rolling runs and matching on
+arrival; not built yet):
 
-1. **Joining opens when the event is published,** normally 4 days before
-   it starts (question 21).
-2. **Each category has its own pool and its own maximum,** e.g. men's
-   singles or mixed doubles (question 20).
+1. **Joining opens when the admin publishes the event,** normally about 4
+   days before it starts. The event form suggests that date.
+2. **Each category has its own pool and its own maximum.** The admin
+   chooses the categories each event offers, gendered or open: e.g. men's
+   singles, women's doubles, mixed doubles, or open singles.
 3. **A category that reaches its maximum closes to new entries and is
    matched straight away,** from the full pool.
 4. **24 hours before the start,** every category that isn't full is
    matched with what it has, **complete matches only**: pairs in singles,
    groups of four in doubles and mixed. Anyone left over stays in the pool,
    and the unused slots stay open for more players.
-5. **In the last 24 hours** joining stays open (question 22), and the
-   matcher runs **every 4 hours** per category. Each run matches the new
-   entries and anyone left over, but only where there are good enough
-   opponents (question 23). The rest wait for the next run.
-6. **On the spot:** players can join at the venue (walk-ins, section 7).
-   Rather than waiting up to 4 hours, a confirmed walk-in triggers a run of
-   its own (Proposed).
-7. **Admins can edit fixtures by hand:** pair players, replace a player,
-   move a match (section 10).
+5. **In the last 24 hours, players are matched as they come in.** Joining
+   stays open until the start. Each newly confirmed entry is paired at once
+   with whoever is waiting in its category, closest rating first, once
+   there are enough for a match (two in singles, four players in doubles
+   and mixed). The match gets the earliest suitable slot and a judge, and
+   is published. There's no rating limit: a big gap is flagged, and the
+   admin can redo it. With nobody to pair, the entry waits for the next
+   arrival.
+6. **Admins can redo any fixture,** at any time: pair players by hand,
+   replace a player, move a match, cancel it, or re-pair a category. The
+   players affected see the change in the app. This is the one exception
+   to rule 7.
+7. **On the spot, the same fixture screen is the desk.** For a player who
+   turns up at the venue, the admin finds or creates their account
+   (section 7), takes the payment offline, and then either matches them
+   from the waiting list or lets matching on arrival pair them.
 8. **Every run only fills gaps** (rule 7): published matches never move
    unless an admin moves them. **Each run publishes its matches straight
    away;** players see them in the app.
@@ -255,9 +264,12 @@ matches separate from events so that can be added without a redesign.
 Why rolling runs: players in a full category get certainty early, and
 late joiners can still play. The cost is that early runs pair from a
 smaller pool, and late joiners get the slots that are left, so their
-preferred time is more often missed.
+preferred time is more often missed. Matching on arrival can pair a
+late joiner badly, so the admin's fixture editing is what keeps it fair.
 
-**Running safely:** the runs are a background job inside the server. With
+**Running safely:** matching on arrival runs inside the request that
+confirms the entry, under the event lock. The run at 24 hours before is a
+background job inside the server. With
 several servers on one database (developers sharing the hosted Postgres),
 only one may run at a time. The job takes a Postgres advisory lock, and
 it's switched on by a setting that is off by default for local
