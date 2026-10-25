@@ -134,7 +134,7 @@ func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		}
 		// The body is text/event-stream carrying json.Marshal output, never
 		// HTML, so there's nothing for a browser to interpret as markup.
-		if _, err := fmt.Fprintf(w, "event: match\ndata: %s\n\n", b); err != nil { //nolint:gosec // G705: JSON in an event stream
+		if _, err := fmt.Fprintf(w, "event: match\ndata: %s\n\n", b); err != nil {
 			return false
 		}
 		flusher.Flush()
